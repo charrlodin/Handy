@@ -23,8 +23,8 @@ use tauri_plugin_autostart::ManagerExt;
 use crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID;
 use crate::settings::{
     self, get_settings, AutoSubmitKey, ClipboardHandling, KeyboardImplementation, LLMPrompt,
-    OverlayPosition, PasteMethod, ShortcutBinding, SoundTheme, TypingTool,
-    APPLE_INTELLIGENCE_PROVIDER_ID,
+    LiveTranscriptFontSize, LiveTranscriptPosition, OverlayPosition, PasteMethod, ShortcutBinding,
+    SoundTheme, TypingTool, APPLE_INTELLIGENCE_PROVIDER_ID,
 };
 use crate::tray;
 
@@ -146,7 +146,7 @@ pub fn change_binding(
 
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
-    if id == "cancel" {
+    if id == "cancel" || (id == "continuous_dictation" && !settings.continuous_dictation_mode) {
         if let Some(mut b) = settings.bindings.get(&id).cloned() {
             b.current_binding = binding;
             settings.bindings.insert(id.clone(), b.clone());
@@ -398,6 +398,10 @@ fn register_all_shortcuts_for_implementation(
         if id == "transcribe_with_post_process" && !current_settings.post_process_enabled {
             continue;
         }
+        // Skip continuous dictation shortcut unless the mode is explicitly enabled
+        if id == "continuous_dictation" && !current_settings.continuous_dictation_mode {
+            continue;
+        }
 
         let mut binding = current_settings
             .bindings
@@ -482,6 +486,44 @@ pub fn change_ptt_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_continuous_dictation_mode_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+
+    if settings.continuous_dictation_mode == enabled {
+        return Ok(());
+    }
+
+    if let Some(binding) = settings.bindings.get("continuous_dictation").cloned() {
+        if enabled {
+            if binding.current_binding.trim().is_empty() {
+                return Err("Continuous dictation requires a shortcut".to_string());
+            }
+            if let Err(e) = register_shortcut(&app, binding) {
+                return Err(format!(
+                    "Failed to register continuous dictation shortcut: {}",
+                    e
+                ));
+            }
+        } else if let Err(e) = unregister_shortcut(&app, binding) {
+            warn!(
+                "Failed to unregister continuous dictation shortcut while disabling: {}",
+                e
+            );
+        }
+    } else if enabled {
+        return Err("Continuous dictation binding is missing".to_string());
+    }
+
+    settings.continuous_dictation_mode = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_audio_feedback_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.audio_feedback = enabled;
@@ -553,6 +595,83 @@ pub fn change_overlay_position_setting(app: AppHandle, position: String) -> Resu
     // Update overlay position without recreating window
     crate::utils::update_overlay_position(&app);
 
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_transcript_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.live_transcript_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_transcript_font_size_setting(
+    app: AppHandle,
+    size: String,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.live_transcript_font_size = match size.as_str() {
+        "small" => LiveTranscriptFontSize::Small,
+        "medium" => LiveTranscriptFontSize::Medium,
+        "large" => LiveTranscriptFontSize::Large,
+        other => {
+            warn!(
+                "Invalid live transcript font size '{}', defaulting to medium",
+                other
+            );
+            LiveTranscriptFontSize::Medium
+        }
+    };
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_transcript_background_opacity_setting(
+    app: AppHandle,
+    opacity: f32,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.live_transcript_background_opacity = opacity.clamp(0.2, 1.0);
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_transcript_max_lines_setting(app: AppHandle, lines: u8) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.live_transcript_max_lines = lines.clamp(1, 3);
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_live_transcript_position_setting(
+    app: AppHandle,
+    position: String,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.live_transcript_position = match position.as_str() {
+        "existing_overlay" => LiveTranscriptPosition::ExistingOverlay,
+        "near_cursor" => LiveTranscriptPosition::NearCursor,
+        "bottom_center" => LiveTranscriptPosition::BottomCenter,
+        other => {
+            warn!(
+                "Invalid live transcript position '{}', defaulting to existing overlay",
+                other
+            );
+            LiveTranscriptPosition::ExistingOverlay
+        }
+    };
+    settings::write_settings(&app, settings);
+    crate::utils::update_overlay_position(&app);
     Ok(())
 }
 

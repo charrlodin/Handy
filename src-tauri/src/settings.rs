@@ -106,12 +106,34 @@ pub struct PostProcessProvider {
     pub supports_structured_output: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Type)]
+pub struct TranscriptCorrection {
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum OverlayPosition {
     None,
     Top,
     Bottom,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveTranscriptFontSize {
+    Small,
+    Medium,
+    Large,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveTranscriptPosition {
+    ExistingOverlay,
+    NearCursor,
+    BottomCenter,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
@@ -338,6 +360,8 @@ impl std::ops::DerefMut for SecretMap {
 pub struct AppSettings {
     pub bindings: HashMap<String, ShortcutBinding>,
     pub push_to_talk: bool,
+    #[serde(default)]
+    pub continuous_dictation_mode: bool,
     pub audio_feedback: bool,
     #[serde(default = "default_audio_feedback_volume")]
     pub audio_feedback_volume: f32,
@@ -365,12 +389,24 @@ pub struct AppSettings {
     pub selected_language: String,
     #[serde(default = "default_overlay_position")]
     pub overlay_position: OverlayPosition,
+    #[serde(default = "default_live_transcript_enabled")]
+    pub live_transcript_enabled: bool,
+    #[serde(default = "default_live_transcript_font_size")]
+    pub live_transcript_font_size: LiveTranscriptFontSize,
+    #[serde(default = "default_live_transcript_background_opacity")]
+    pub live_transcript_background_opacity: f32,
+    #[serde(default = "default_live_transcript_max_lines")]
+    pub live_transcript_max_lines: u8,
+    #[serde(default = "default_live_transcript_position")]
+    pub live_transcript_position: LiveTranscriptPosition,
     #[serde(default = "default_debug_mode")]
     pub debug_mode: bool,
     #[serde(default = "default_log_level")]
     pub log_level: LogLevel,
     #[serde(default)]
     pub custom_words: Vec<String>,
+    #[serde(default)]
+    pub learned_corrections: Vec<TranscriptCorrection>,
     #[serde(default)]
     pub model_unload_timeout: ModelUnloadTimeout,
     #[serde(default = "default_word_correction_threshold")]
@@ -465,6 +501,26 @@ fn default_overlay_position() -> OverlayPosition {
     return OverlayPosition::None;
     #[cfg(not(target_os = "linux"))]
     return OverlayPosition::Bottom;
+}
+
+fn default_live_transcript_enabled() -> bool {
+    true
+}
+
+fn default_live_transcript_font_size() -> LiveTranscriptFontSize {
+    LiveTranscriptFontSize::Medium
+}
+
+fn default_live_transcript_background_opacity() -> f32 {
+    0.72
+}
+
+fn default_live_transcript_max_lines() -> u8 {
+    1
+}
+
+fn default_live_transcript_position() -> LiveTranscriptPosition {
+    LiveTranscriptPosition::ExistingOverlay
 }
 
 fn default_debug_mode() -> bool {
@@ -753,6 +809,25 @@ pub fn get_default_settings() -> AppSettings {
             current_binding: default_post_process_shortcut.to_string(),
         },
     );
+    #[cfg(target_os = "windows")]
+    let default_continuous_shortcut = "ctrl+alt+space";
+    #[cfg(target_os = "macos")]
+    let default_continuous_shortcut = "option+command+space";
+    #[cfg(target_os = "linux")]
+    let default_continuous_shortcut = "ctrl+alt+space";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let default_continuous_shortcut = "alt+command+space";
+
+    bindings.insert(
+        "continuous_dictation".to_string(),
+        ShortcutBinding {
+            id: "continuous_dictation".to_string(),
+            name: "Continuous Dictation".to_string(),
+            description: "Toggles continuous dictation recording on and off.".to_string(),
+            default_binding: default_continuous_shortcut.to_string(),
+            current_binding: default_continuous_shortcut.to_string(),
+        },
+    );
     bindings.insert(
         "cancel".to_string(),
         ShortcutBinding {
@@ -767,6 +842,7 @@ pub fn get_default_settings() -> AppSettings {
     AppSettings {
         bindings,
         push_to_talk: true,
+        continuous_dictation_mode: false,
         audio_feedback: false,
         audio_feedback_volume: default_audio_feedback_volume(),
         sound_theme: default_sound_theme(),
@@ -781,9 +857,15 @@ pub fn get_default_settings() -> AppSettings {
         translate_to_english: false,
         selected_language: "auto".to_string(),
         overlay_position: default_overlay_position(),
+        live_transcript_enabled: default_live_transcript_enabled(),
+        live_transcript_font_size: default_live_transcript_font_size(),
+        live_transcript_background_opacity: default_live_transcript_background_opacity(),
+        live_transcript_max_lines: default_live_transcript_max_lines(),
+        live_transcript_position: default_live_transcript_position(),
         debug_mode: false,
         log_level: default_log_level(),
         custom_words: Vec::new(),
+        learned_corrections: Vec::new(),
         model_unload_timeout: ModelUnloadTimeout::default(),
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),
@@ -956,6 +1038,24 @@ mod tests {
         let settings = get_default_settings();
         assert!(!settings.auto_submit);
         assert_eq!(settings.auto_submit_key, AutoSubmitKey::Enter);
+    }
+
+    #[test]
+    fn default_settings_include_continuous_dictation_and_live_transcript() {
+        let settings = get_default_settings();
+
+        assert!(!settings.continuous_dictation_mode);
+        assert!(settings.live_transcript_enabled);
+        assert_eq!(
+            settings.live_transcript_font_size,
+            LiveTranscriptFontSize::Medium
+        );
+        assert_eq!(settings.live_transcript_max_lines, 1);
+        assert_eq!(
+            settings.live_transcript_position,
+            LiveTranscriptPosition::ExistingOverlay
+        );
+        assert!(settings.bindings.contains_key("continuous_dictation"));
     }
 
     #[test]

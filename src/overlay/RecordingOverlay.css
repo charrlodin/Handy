@@ -1,15 +1,25 @@
 .recording-overlay {
-  height: 36px;
+  min-height: 36px;
   width: 172px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   padding: 6px;
-  background: #000000cc;
+  background: rgba(0, 0, 0, var(--live-transcript-bg-opacity, 0.8));
   border-radius: 18px;
   opacity: 0;
   transition: opacity 300ms ease-out;
   box-sizing: border-box;
+}
+
+.recording-overlay.live-enabled {
+  height: auto;
+  max-height: 100%;
+  width: 100%;
+  grid-template-columns: 24px 1fr auto;
+  gap: 6px;
+  border-radius: 18px;
+  padding: 8px 10px;
 }
 
 .overlay-left {
@@ -21,6 +31,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
 }
 
 .overlay-right {
@@ -58,6 +69,29 @@
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   animation: transcribing-pulse 1.5s infinite ease-in-out;
+}
+
+.live-transcript-text {
+  display: block;
+  max-height: 190px;
+  overflow-y: auto;
+  width: 100%;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: var(--live-transcript-font-size, 15px);
+  line-height: 1.32;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow-wrap: break-word;
+  text-align: start;
+  white-space: pre-wrap;
+}
+
+.live-transcript-text.final {
+  color: white;
+}
+
+.live-transcript-text.partial {
+  color: rgba(255, 255, 255, 0.68);
 }
 
 @keyframes transcribing-pulse {

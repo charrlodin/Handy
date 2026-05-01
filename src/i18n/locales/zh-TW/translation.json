@@ -15,7 +15,8 @@
     "postProcessing": "後處理",
     "history": "歷史紀錄",
     "debug": "偵錯",
-    "about": "關於"
+    "about": "關於",
+    "dashboard": "Dashboard"
   },
   "onboarding": {
     "subtitle": "首先，請選擇一種模型",
@@ -176,6 +177,10 @@
           "transcribe_with_post_process": {
             "name": "後處理快捷鍵",
             "description": "可選：專用快捷鍵，使用時一律對轉錄結果套用 AI 後處理"
+          },
+          "continuous_dictation": {
+            "name": "Continuous Dictation Shortcut",
+            "description": "The keyboard shortcut to toggle continuous dictation on and off."
           }
         },
         "errors": {
@@ -195,6 +200,43 @@
       "pushToTalk": {
         "label": "按住說話",
         "description": "按住錄製，放開停止"
+      },
+      "continuousDictation": {
+        "label": "Continuous Dictation Mode",
+        "description": "Press a separate shortcut once to start recording, then press it again to stop and transcribe."
+      },
+      "liveTranscript": {
+        "title": "Live Transcript",
+        "enabled": {
+          "label": "Show Live Transcript",
+          "description": "Show partial transcription text in the recording overlay while you speak."
+        },
+        "fontSize": {
+          "label": "Font Size",
+          "description": "Set the live transcript text size.",
+          "options": {
+            "small": "Small",
+            "medium": "Medium",
+            "large": "Large"
+          }
+        },
+        "opacity": {
+          "label": "Background Opacity",
+          "description": "Set the live transcript background opacity."
+        },
+        "maxLines": {
+          "label": "Max Lines",
+          "description": "Limit how many transcript lines are visible."
+        },
+        "position": {
+          "label": "Position",
+          "description": "Choose where live transcript feedback appears.",
+          "options": {
+            "existingOverlay": "Existing overlay position",
+            "nearCursor": "Near cursor",
+            "bottomCenter": "Bottom center"
+          }
+        }
       }
     },
     "models": {
@@ -431,7 +473,14 @@
       "retranscribe": "重新轉錄",
       "retranscribeError": "重新轉錄失敗，請重試。",
       "transcribing": "轉錄中...",
-      "transcriptionFailed": "轉錄失敗。您可以使用重試圖示重新轉錄。"
+      "transcriptionFailed": "轉錄失敗。您可以使用重試圖示重新轉錄。",
+      "teachCorrection": "Teach Handy this correction",
+      "correctedTranscriptPlaceholder": "Edit this transcript to teach Handy what you meant",
+      "saveCorrection": "Learn correction",
+      "cancelCorrection": "Cancel",
+      "correctionSaved": "Correction learned",
+      "correctionNoChanges": "No correction found",
+      "correctionError": "Failed to learn correction. Please try again."
     },
     "debug": {
       "title": "偵錯",
@@ -608,5 +657,38 @@
   "overlay": {
     "transcribing": "正在轉錄...",
     "processing": "處理中..."
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "description": "A snapshot of how much Handy has helped you write.",
+    "refresh": "Refresh",
+    "cards": {
+      "streak": {
+        "title": "Daily streak",
+        "value_one": "{{count}} day",
+        "value_other": "{{count}} days",
+        "activeDescription": "You dictated recently. Keep it going.",
+        "emptyDescription": "Start dictating to build a streak."
+      },
+      "speed": {
+        "title": "Average speed",
+        "value": "{{count}} wpm",
+        "description": "Based on completed dictations with saved audio."
+      },
+      "words": {
+        "title": "Total words dictated",
+        "description_one": "Across {{count}} completed dictation.",
+        "description_other": "Across {{count}} completed dictations."
+      },
+      "timeSaved": {
+        "title": "Estimated time saved",
+        "description": "Compared with typing at 40 words per minute."
+      }
+    },
+    "footer": {
+      "empty": "Your dashboard will populate after your first completed dictation.",
+      "withHistory_one": "{{count}} dictation captured over {{minutes}} of speaking.",
+      "withHistory_other": "{{count}} dictations captured over {{minutes}} of speaking."
+    }
   }
 }

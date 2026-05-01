@@ -1,3 +1,4 @@
+use crate::settings::TranscriptCorrection;
 use natural::phonetics::soundex;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -231,6 +232,20 @@ fn get_filler_words_for_language(lang: &str) -> &'static [&'static str] {
 
 static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unwrap());
 
+fn phrase_token(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
+
+fn correction_phrase(words: &[(&str, String)]) -> String {
+    words
+        .iter()
+        .map(|(raw, _)| raw.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Collapses repeated words (3+ repetitions) to a single instance.
 /// E.g., "wh wh wh wh" -> "wh", "I I I I" -> "I"
 fn collapse_stutters(text: &str) -> String {
@@ -268,6 +283,185 @@ fn collapse_stutters(text: &str) -> String {
     }
 
     result.join(" ")
+}
+
+/// Collapses exact adjacent phrase repeats commonly produced by chunked ASR.
+/// Single-word double repeats are left alone because "no no" and "very very"
+/// can be intentional; multi-word immediate repeats are far more likely to be
+/// stitching artifacts.
+fn collapse_repeated_phrases(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 4 {
+        return text.to_string();
+    }
+
+    let normalized: Vec<String> = words.iter().map(|word| phrase_token(word)).collect();
+    let mut result = Vec::with_capacity(words.len());
+    let mut i = 0;
+
+    while i < words.len() {
+        let max_phrase_len = 8.min((words.len() - i) / 2);
+        let repeated_len = (2..=max_phrase_len).rev().find(|&len| {
+            let first = &normalized[i..i + len];
+            let second = &normalized[i + len..i + (len * 2)];
+            first.iter().all(|word| !word.is_empty()) && first == second
+        });
+
+        if let Some(len) = repeated_len {
+            result.extend_from_slice(&words[i..i + len]);
+            i += len;
+            while i + len <= words.len() && normalized[i - len..i] == normalized[i..i + len] {
+                i += len;
+            }
+        } else {
+            result.push(words[i]);
+            i += 1;
+        }
+    }
+
+    result.join(" ")
+}
+
+pub fn apply_learned_corrections(text: &str, corrections: &[TranscriptCorrection]) -> String {
+    let mut result = text.to_string();
+    let mut ordered = corrections
+        .iter()
+        .filter(|correction| {
+            !correction.from.trim().is_empty()
+                && !correction.to.trim().is_empty()
+                && !correction.from.eq_ignore_ascii_case(&correction.to)
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|correction| std::cmp::Reverse(correction.from.len()));
+
+    for correction in ordered {
+        let phrase_pattern = correction
+            .from
+            .split_whitespace()
+            .map(regex::escape)
+            .collect::<Vec<_>>()
+            .join(r"\s+");
+        let Ok(pattern) = Regex::new(&format!(
+            r"(?i)(^|[^\p{{L}}\p{{N}}])({})($|[^\p{{L}}\p{{N}}])",
+            phrase_pattern
+        )) else {
+            continue;
+        };
+
+        result = pattern
+            .replace_all(&result, |caps: &regex::Captures| {
+                format!("{}{}{}", &caps[1], correction.to, &caps[3])
+            })
+            .to_string();
+    }
+
+    result
+}
+
+pub fn derive_transcript_corrections(original: &str, corrected: &str) -> Vec<TranscriptCorrection> {
+    let original_words = original
+        .split_whitespace()
+        .map(|word| (word, phrase_token(word)))
+        .filter(|(_, normalized)| !normalized.is_empty())
+        .collect::<Vec<_>>();
+    let corrected_words = corrected
+        .split_whitespace()
+        .map(|word| (word, phrase_token(word)))
+        .filter(|(_, normalized)| !normalized.is_empty())
+        .collect::<Vec<_>>();
+
+    if original_words.is_empty() || corrected_words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut common_prefix = 0;
+    while common_prefix < original_words.len().min(corrected_words.len())
+        && original_words[common_prefix].0 == corrected_words[common_prefix].0
+    {
+        common_prefix += 1;
+    }
+
+    let mut common_suffix = 0;
+    while common_suffix < original_words.len().saturating_sub(common_prefix)
+        && common_suffix < corrected_words.len().saturating_sub(common_prefix)
+        && original_words[original_words.len() - 1 - common_suffix].0
+            == corrected_words[corrected_words.len() - 1 - common_suffix].0
+    {
+        common_suffix += 1;
+    }
+
+    if common_prefix + common_suffix < original_words.len()
+        && common_prefix + common_suffix < corrected_words.len()
+    {
+        let original_end = original_words.len() - common_suffix;
+        let corrected_end = corrected_words.len() - common_suffix;
+        if original_end - common_prefix <= 8 && corrected_end - common_prefix <= 10 {
+            let from = correction_phrase(&original_words[common_prefix..original_end]);
+            let to = correction_phrase(&corrected_words[common_prefix..corrected_end]);
+            if !from.is_empty()
+                && !to.is_empty()
+                && !from.eq_ignore_ascii_case(&to)
+                && from.len() <= 80
+                && to.len() <= 80
+            {
+                return vec![TranscriptCorrection { from, to }];
+            }
+        }
+    }
+
+    let mut lcs = vec![vec![0usize; corrected_words.len() + 1]; original_words.len() + 1];
+    for i in (0..original_words.len()).rev() {
+        for j in (0..corrected_words.len()).rev() {
+            lcs[i][j] = if original_words[i].1 == corrected_words[j].1 {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut matches = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < original_words.len() && j < corrected_words.len() {
+        if original_words[i].1 == corrected_words[j].1 {
+            matches.push((i, j));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    matches.push((original_words.len(), corrected_words.len()));
+
+    let mut corrections = Vec::new();
+    let (mut previous_original, mut previous_corrected) = (0, 0);
+    for (original_index, corrected_index) in matches {
+        if original_index > previous_original && corrected_index > previous_corrected {
+            let from = correction_phrase(&original_words[previous_original..original_index]);
+            let to = correction_phrase(&corrected_words[previous_corrected..corrected_index]);
+
+            if !from.is_empty()
+                && !to.is_empty()
+                && !from.eq_ignore_ascii_case(&to)
+                && from.len() <= 80
+                && to.len() <= 80
+                && original_index - previous_original <= 8
+                && corrected_index - previous_corrected <= 10
+                && !corrections.iter().any(|existing: &TranscriptCorrection| {
+                    existing.from.eq_ignore_ascii_case(&from)
+                })
+            {
+                corrections.push(TranscriptCorrection { from, to });
+            }
+        }
+
+        previous_original = original_index + 1;
+        previous_corrected = corrected_index + 1;
+    }
+
+    corrections
 }
 
 /// Filters transcription output by removing filler words and stutter artifacts.
@@ -311,6 +505,9 @@ pub fn filter_transcription_output(
 
     // Collapse repeated 1-2 letter words (stutter artifacts like "wh wh wh wh")
     filtered = collapse_stutters(&filtered);
+
+    // Collapse repeated phrases caused by overlapping chunk transcription.
+    filtered = collapse_repeated_phrases(&filtered);
 
     // Clean up multiple spaces to single space
     filtered = MULTI_SPACE_PATTERN.replace_all(&filtered, " ").to_string();
@@ -443,6 +640,41 @@ mod tests {
         let text = "no no is fine";
         let result = filter_transcription_output(text, "en", &None);
         assert_eq!(result, "no no is fine");
+    }
+
+    #[test]
+    fn test_filter_collapses_repeated_phrase_artifacts() {
+        let text = "I need the app to work the app to work properly";
+        let result = filter_transcription_output(text, "en", &None);
+        assert_eq!(result, "I need the app to work properly");
+    }
+
+    #[test]
+    fn test_apply_learned_corrections_replaces_case_insensitive_phrase() {
+        let corrections = vec![crate::settings::TranscriptCorrection {
+            from: "handy app".to_string(),
+            to: "Handy".to_string(),
+        }];
+
+        let result = apply_learned_corrections("the handy app is better", &corrections);
+
+        assert_eq!(result, "the Handy is better");
+    }
+
+    #[test]
+    fn test_derive_transcript_corrections_detects_corrected_phrase() {
+        let corrections = derive_transcript_corrections(
+            "please open handy app for me",
+            "please open Handy for me",
+        );
+
+        assert_eq!(
+            corrections,
+            vec![crate::settings::TranscriptCorrection {
+                from: "handy app".to_string(),
+                to: "Handy".to_string(),
+            }]
+        );
     }
 
     #[test]

@@ -27,6 +27,10 @@ pub fn init_shortcuts(app: &AppHandle) {
         if id == "transcribe_with_post_process" && !user_settings.post_process_enabled {
             continue;
         }
+        // Skip continuous dictation shortcut unless the mode is explicitly enabled
+        if id == "continuous_dictation" && !user_settings.continuous_dictation_mode {
+            continue;
+        }
         let binding = user_settings
             .bindings
             .get(&id)

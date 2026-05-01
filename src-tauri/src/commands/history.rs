@@ -1,8 +1,10 @@
 use crate::actions::process_transcription_output;
+use crate::audio_toolkit::derive_transcript_corrections;
 use crate::managers::{
-    history::{HistoryManager, PaginatedHistory},
+    history::{DashboardStats, HistoryManager, PaginatedHistory},
     transcription::TranscriptionManager,
 };
+use crate::settings::{self, TranscriptCorrection};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -17,6 +19,17 @@ pub async fn get_history_entries(
     history_manager
         .get_history_entries(cursor, limit)
         .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_dashboard_stats(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+) -> Result<DashboardStats, String> {
+    history_manager
+        .get_dashboard_stats()
         .map_err(|e| e.to_string())
 }
 
@@ -104,6 +117,68 @@ pub async fn retry_history_entry_transcription(
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn learn_history_entry_corrections(
+    app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+    corrected_text: String,
+) -> Result<Vec<TranscriptCorrection>, String> {
+    let entry = history_manager
+        .get_entry_by_id(id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("History entry {id} not found"))?;
+
+    let original_text = entry
+        .post_processed_text
+        .as_deref()
+        .unwrap_or(&entry.transcription_text);
+    let corrected_text = corrected_text.trim().to_string();
+    if corrected_text.is_empty() || original_text.trim() == corrected_text {
+        return Ok(Vec::new());
+    }
+
+    let corrections = derive_transcript_corrections(original_text, &corrected_text);
+    if corrections.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut app_settings = settings::get_settings(&app);
+    for correction in &corrections {
+        if !app_settings.learned_corrections.iter().any(|existing| {
+            existing.from.eq_ignore_ascii_case(&correction.from)
+                && existing.to.eq_ignore_ascii_case(&correction.to)
+        }) {
+            app_settings.learned_corrections.push(correction.clone());
+        }
+
+        if correction.to.len() <= 80
+            && !app_settings
+                .custom_words
+                .iter()
+                .any(|word| word.eq_ignore_ascii_case(&correction.to))
+        {
+            app_settings.custom_words.push(correction.to.clone());
+        }
+    }
+
+    const MAX_LEARNED_CORRECTIONS: usize = 120;
+    if app_settings.learned_corrections.len() > MAX_LEARNED_CORRECTIONS {
+        let excess = app_settings.learned_corrections.len() - MAX_LEARNED_CORRECTIONS;
+        app_settings.learned_corrections.drain(0..excess);
+    }
+
+    settings::write_settings(&app, app_settings);
+
+    history_manager
+        .update_transcription(id, corrected_text, None, entry.post_process_prompt)
+        .map_err(|e| e.to_string())?;
+
+    Ok(corrections)
 }
 
 #[tauri::command]

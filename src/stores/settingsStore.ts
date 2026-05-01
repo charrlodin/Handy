@@ -89,6 +89,8 @@ const settingUpdaters: {
   update_checks_enabled: (value) =>
     commands.changeUpdateChecksSetting(value as boolean),
   push_to_talk: (value) => commands.changePttSetting(value as boolean),
+  continuous_dictation_mode: (value) =>
+    commands.changeContinuousDictationModeSetting(value as boolean),
   selected_microphone: (value) =>
     commands.setSelectedMicrophone(
       (value as string) === "Default" || value === null
@@ -113,6 +115,16 @@ const settingUpdaters: {
     commands.changeSelectedLanguageSetting(value as string),
   overlay_position: (value) =>
     commands.changeOverlayPositionSetting(value as string),
+  live_transcript_enabled: (value) =>
+    commands.changeLiveTranscriptEnabledSetting(value as boolean),
+  live_transcript_font_size: (value) =>
+    commands.changeLiveTranscriptFontSizeSetting(value as string),
+  live_transcript_background_opacity: (value) =>
+    commands.changeLiveTranscriptBackgroundOpacitySetting(value as number),
+  live_transcript_max_lines: (value) =>
+    commands.changeLiveTranscriptMaxLinesSetting(value as number),
+  live_transcript_position: (value) =>
+    commands.changeLiveTranscriptPositionSetting(value as string),
   debug_mode: (value) => commands.changeDebugModeSetting(value as boolean),
   custom_words: (value) => commands.updateCustomWords(value as string[]),
   word_correction_threshold: (value) =>

@@ -7,19 +7,45 @@ import {
   CancelIcon,
 } from "../components/icons";
 import "./RecordingOverlay.css";
-import { commands } from "@/bindings";
+import { commands, type AppSettings } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
 type OverlayState = "recording" | "transcribing" | "processing";
+interface LiveTranscriptEvent {
+  text: string;
+  is_final: boolean;
+}
+
+const fontSizePx = (settings: AppSettings | null): number => {
+  switch (settings?.live_transcript_font_size) {
+    case "small":
+      return 13;
+    case "large":
+      return 18;
+    case "medium":
+    default:
+      return 15;
+  }
+};
 
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
   const [levels, setLevels] = useState<number[]>(Array(16).fill(0));
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [isFinalTranscript, setIsFinalTranscript] = useState(false);
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   const direction = getLanguageDirection(i18n.language);
+  const liveTranscriptEnabled = settings?.live_transcript_enabled ?? true;
+  const transcriptText = liveTranscript.trim();
+  const showLiveTranscript =
+    liveTranscriptEnabled &&
+    transcriptText.length > 0 &&
+    (state === "recording" || isFinalTranscript);
+  const showStatusText = state !== "recording" && !showLiveTranscript;
 
   useEffect(() => {
     const setupEventListeners = async () => {
@@ -27,8 +53,14 @@ const RecordingOverlay: React.FC = () => {
       const unlistenShow = await listen("show-overlay", async (event) => {
         // Sync language from settings each time overlay is shown
         await syncLanguageFromSettings();
+        const settingsResult = await commands.getAppSettings();
+        if (settingsResult.status === "ok") {
+          setSettings(settingsResult.data);
+        }
         const overlayState = event.payload as OverlayState;
         setState(overlayState);
+        setLiveTranscript("");
+        setIsFinalTranscript(false);
         setIsVisible(true);
       });
 
@@ -36,6 +68,14 @@ const RecordingOverlay: React.FC = () => {
       const unlistenHide = await listen("hide-overlay", () => {
         setIsVisible(false);
       });
+
+      const unlistenTranscript = await listen<LiveTranscriptEvent>(
+        "live-transcript",
+        (event) => {
+          setLiveTranscript(event.payload.text);
+          setIsFinalTranscript(event.payload.is_final);
+        },
+      );
 
       // Listen for mic-level updates
       const unlistenLevel = await listen<number[]>("mic-level", (event) => {
@@ -55,6 +95,7 @@ const RecordingOverlay: React.FC = () => {
       return () => {
         unlistenShow();
         unlistenHide();
+        unlistenTranscript();
         unlistenLevel();
       };
     };
@@ -73,12 +114,33 @@ const RecordingOverlay: React.FC = () => {
   return (
     <div
       dir={direction}
-      className={`recording-overlay ${isVisible ? "fade-in" : ""}`}
+      className={`recording-overlay ${
+        liveTranscriptEnabled ? "live-enabled" : ""
+      } ${showLiveTranscript ? "with-transcript" : ""} ${
+        isVisible ? "fade-in" : ""
+      }`}
+      style={
+        {
+          "--live-transcript-font-size": `${fontSizePx(settings)}px`,
+          "--live-transcript-bg-opacity": String(
+            settings?.live_transcript_background_opacity ?? 0.72,
+          ),
+        } as React.CSSProperties
+      }
     >
       <div className="overlay-left">{getIcon()}</div>
 
       <div className="overlay-middle">
-        {state === "recording" && (
+        {showLiveTranscript && (
+          <div
+            className={`live-transcript-text ${
+              isFinalTranscript ? "final" : "partial"
+            }`}
+          >
+            {transcriptText}
+          </div>
+        )}
+        {state === "recording" && !showLiveTranscript && (
           <div className="bars-container">
             {levels.map((v, i) => (
               <div
@@ -93,10 +155,10 @@ const RecordingOverlay: React.FC = () => {
             ))}
           </div>
         )}
-        {state === "transcribing" && (
+        {state === "transcribing" && showStatusText && (
           <div className="transcribing-text">{t("overlay.transcribing")}</div>
         )}
-        {state === "processing" && (
+        {state === "processing" && showStatusText && (
           <div className="transcribing-text">{t("overlay.processing")}</div>
         )}
       </div>

@@ -12,6 +12,11 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 #[cfg(target_os = "linux")]
 use crate::utils::{is_kde_wayland, is_wayland};
 
+fn clipboard_restore_delay_ms(text: &str, paste_delay_ms: u64) -> u64 {
+    let text_size_delay = 150 + (text.chars().count() as u64 / 3);
+    paste_delay_ms.max(text_size_delay).clamp(250, 3_000)
+}
+
 /// Pastes text using the clipboard: saves current content, writes text, sends paste keystroke, restores clipboard.
 fn paste_via_clipboard(
     enigo: &mut Enigo,
@@ -61,7 +66,10 @@ fn paste_via_clipboard(
         }
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(clipboard_restore_delay_ms(
+        text,
+        paste_delay_ms,
+    )));
 
     // Restore original clipboard content
     // On Wayland, prefer wl-copy for better compatibility
@@ -683,5 +691,22 @@ mod tests {
         assert!(should_send_auto_submit(true, PasteMethod::Direct));
         assert!(should_send_auto_submit(true, PasteMethod::CtrlShiftV));
         assert!(should_send_auto_submit(true, PasteMethod::ShiftInsert));
+    }
+
+    #[test]
+    fn clipboard_restore_delay_has_safe_minimum() {
+        assert_eq!(clipboard_restore_delay_ms("short", 60), 250);
+    }
+
+    #[test]
+    fn clipboard_restore_delay_scales_for_long_text() {
+        let long_text = "a".repeat(6_000);
+
+        assert!(clipboard_restore_delay_ms(&long_text, 60) > 1_000);
+    }
+
+    #[test]
+    fn clipboard_restore_delay_respects_configured_paste_delay() {
+        assert_eq!(clipboard_restore_delay_ms("short", 900), 900);
     }
 }

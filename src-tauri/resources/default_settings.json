@@ -5,8 +5,21 @@
       "name": "Transcribe Keyboard Shortcut",
       "description": "Converts your speech into text.",
       "default_binding": "Platform-specific: ctrl+space (Windows/Linux), alt+space (macOS)"
+    },
+    "continuous_dictation": {
+      "id": "continuous_dictation",
+      "name": "Continuous Dictation Keyboard Shortcut",
+      "description": "Toggles continuous dictation on and off.",
+      "default_binding": "Platform-specific: ctrl+alt+space (Windows/Linux), option+command+space (macOS)"
     }
   },
   "push_to_talk": true,
-  "selected_language": "auto"
+  "continuous_dictation_mode": false,
+  "selected_language": "auto",
+  "live_transcript_enabled": true,
+  "live_transcript_font_size": "medium",
+  "live_transcript_background_opacity": 0.72,
+  "live_transcript_max_lines": 1,
+  "live_transcript_position": "existing_overlay",
+  "learned_corrections": []
 }

@@ -114,6 +114,7 @@ fn escape_string(s: &str) -> String {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn build_apple_intelligence_bridge() {
     use std::env;
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -144,23 +145,6 @@ fn build_apple_intelligence_bridge() {
         .to_string()
     });
 
-    // Check if the SDK supports FoundationModels (required for Apple Intelligence)
-    let framework_path =
-        Path::new(&sdk_path).join("System/Library/Frameworks/FoundationModels.framework");
-    let has_foundation_models = framework_path.exists();
-
-    let source_file = if has_foundation_models {
-        println!("cargo:warning=Building with Apple Intelligence support.");
-        REAL_SWIFT_FILE
-    } else {
-        println!("cargo:warning=Apple Intelligence SDK not found. Building with stubs.");
-        STUB_SWIFT_FILE
-    };
-
-    if !Path::new(source_file).exists() {
-        panic!("Source file {} is missing!", source_file);
-    }
-
     // See SDKROOT note above — same env-override pattern for non-Xcode toolchains.
     let swiftc_path = env::var("SWIFTC").unwrap_or_else(|_| {
         String::from_utf8(
@@ -174,6 +158,48 @@ fn build_apple_intelligence_bridge() {
         .trim()
         .to_string()
     });
+
+    // Check if the SDK and selected Swift toolchain can build FoundationModels.
+    // Some Command Line Tools installs include the SDK framework but omit the
+    // host macro plugin required by @Generable, so compile the stub instead of
+    // blocking the whole app build.
+    let framework_path =
+        Path::new(&sdk_path).join("System/Library/Frameworks/FoundationModels.framework");
+    let has_foundation_models = framework_path.exists();
+    let swift_toolchain_root = Path::new(&swiftc_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("Unable to determine Swift toolchain root");
+    let swift_plugin_dir = swift_toolchain_root.join("lib/swift/host/plugins");
+    let has_foundation_models_macros = fs::read_dir(&swift_plugin_dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("FoundationModelsMacros")
+            })
+        })
+        .unwrap_or(false);
+    let has_apple_intelligence_support = has_foundation_models && has_foundation_models_macros;
+
+    let source_file = if has_apple_intelligence_support {
+        println!("cargo:warning=Building with Apple Intelligence support.");
+        REAL_SWIFT_FILE
+    } else {
+        if !has_foundation_models {
+            println!("cargo:warning=Apple Intelligence SDK not found. Building with stubs.");
+        } else {
+            println!(
+                "cargo:warning=FoundationModels Swift macros not found in selected toolchain. Building with stubs."
+            );
+        }
+        STUB_SWIFT_FILE
+    };
+
+    if !Path::new(source_file).exists() {
+        panic!("Source file {} is missing!", source_file);
+    }
 
     let toolchain_swift_lib = Path::new(&swiftc_path)
         .parent()
@@ -244,7 +270,7 @@ fn build_apple_intelligence_bridge() {
     println!("cargo:rustc-link-search=native={}", sdk_swift_lib.display());
     println!("cargo:rustc-link-lib=framework=Foundation");
 
-    if has_foundation_models {
+    if has_apple_intelligence_support {
         // Use weak linking so the app can launch on systems without FoundationModels
         println!("cargo:rustc-link-arg=-weak_framework");
         println!("cargo:rustc-link-arg=FoundationModels");

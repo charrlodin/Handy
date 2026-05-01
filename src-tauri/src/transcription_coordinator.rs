@@ -16,6 +16,7 @@ enum Command {
         hotkey_string: String,
         is_pressed: bool,
         push_to_talk: bool,
+        continuous_dictation_mode: bool,
     },
     Cancel {
         recording_was_active: bool,
@@ -30,6 +31,33 @@ enum Stage {
     Processing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptionTriggerMode {
+    PushToTalk,
+    Toggle,
+    Disabled,
+}
+
+impl TranscriptionTriggerMode {
+    pub fn for_binding(
+        binding_id: &str,
+        push_to_talk: bool,
+        continuous_dictation_mode: bool,
+    ) -> Self {
+        if binding_id == "continuous_dictation" {
+            if continuous_dictation_mode {
+                Self::Toggle
+            } else {
+                Self::Disabled
+            }
+        } else if push_to_talk {
+            Self::PushToTalk
+        } else {
+            Self::Toggle
+        }
+    }
+}
+
 /// Serialises all transcription lifecycle events through a single thread
 /// to eliminate race conditions between keyboard shortcuts, signals, and
 /// the async transcribe-paste pipeline.
@@ -38,7 +66,33 @@ pub struct TranscriptionCoordinator {
 }
 
 pub fn is_transcribe_binding(id: &str) -> bool {
-    id == "transcribe" || id == "transcribe_with_post_process"
+    id == "transcribe" || id == "transcribe_with_post_process" || id == "continuous_dictation"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_transcribe_binding, TranscriptionTriggerMode};
+
+    #[test]
+    fn continuous_dictation_is_a_transcribe_binding() {
+        assert!(is_transcribe_binding("continuous_dictation"));
+    }
+
+    #[test]
+    fn continuous_binding_uses_toggle_when_enabled() {
+        assert_eq!(
+            TranscriptionTriggerMode::for_binding("continuous_dictation", true, true),
+            TranscriptionTriggerMode::Toggle
+        );
+    }
+
+    #[test]
+    fn normal_transcribe_preserves_push_to_talk_mode() {
+        assert_eq!(
+            TranscriptionTriggerMode::for_binding("transcribe", true, true),
+            TranscriptionTriggerMode::PushToTalk
+        );
+    }
 }
 
 impl TranscriptionCoordinator {
@@ -57,6 +111,7 @@ impl TranscriptionCoordinator {
                             hotkey_string,
                             is_pressed,
                             push_to_talk,
+                            continuous_dictation_mode,
                         } => {
                             // Debounce rapid-fire press events (key repeat / double-tap).
                             // Releases always pass through for push-to-talk.
@@ -69,16 +124,24 @@ impl TranscriptionCoordinator {
                                 last_press = Some(now);
                             }
 
-                            if push_to_talk {
-                                if is_pressed && matches!(stage, Stage::Idle) {
-                                    start(&app, &mut stage, &binding_id, &hotkey_string);
-                                } else if !is_pressed
-                                    && matches!(&stage, Stage::Recording(id) if id == &binding_id)
-                                {
-                                    stop(&app, &mut stage, &binding_id, &hotkey_string);
+                            match TranscriptionTriggerMode::for_binding(
+                                &binding_id,
+                                push_to_talk,
+                                continuous_dictation_mode,
+                            ) {
+                                TranscriptionTriggerMode::Disabled => {
+                                    debug!("Ignoring disabled transcribe binding '{binding_id}'");
                                 }
-                            } else if is_pressed {
-                                match &stage {
+                                TranscriptionTriggerMode::PushToTalk => {
+                                    if is_pressed && matches!(stage, Stage::Idle) {
+                                        start(&app, &mut stage, &binding_id, &hotkey_string);
+                                    } else if !is_pressed
+                                        && matches!(&stage, Stage::Recording(id) if id == &binding_id)
+                                    {
+                                        stop(&app, &mut stage, &binding_id, &hotkey_string);
+                                    }
+                                }
+                                TranscriptionTriggerMode::Toggle if is_pressed => match &stage {
                                     Stage::Idle => {
                                         start(&app, &mut stage, &binding_id, &hotkey_string);
                                     }
@@ -88,7 +151,8 @@ impl TranscriptionCoordinator {
                                     _ => {
                                         debug!("Ignoring press for '{binding_id}': pipeline busy")
                                     }
-                                }
+                                },
+                                TranscriptionTriggerMode::Toggle => {}
                             }
                         }
                         Command::Cancel {
@@ -124,6 +188,7 @@ impl TranscriptionCoordinator {
         hotkey_string: &str,
         is_pressed: bool,
         push_to_talk: bool,
+        continuous_dictation_mode: bool,
     ) {
         if self
             .tx
@@ -132,6 +197,7 @@ impl TranscriptionCoordinator {
                 hotkey_string: hotkey_string.to_string(),
                 is_pressed,
                 push_to_talk,
+                continuous_dictation_mode,
             })
             .is_err()
         {

@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -31,6 +32,27 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN post_processed_text TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_prompt TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_requested BOOLEAN NOT NULL DEFAULT 0;"),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS dashboard_stats (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            total_words INTEGER NOT NULL DEFAULT 0,
+            total_duration_seconds REAL NOT NULL DEFAULT 0,
+            dictation_count INTEGER NOT NULL DEFAULT 0,
+            first_timestamp INTEGER,
+            last_timestamp INTEGER
+        );
+        INSERT OR IGNORE INTO dashboard_stats (
+            id,
+            total_words,
+            total_duration_seconds,
+            dictation_count,
+            first_timestamp,
+            last_timestamp
+        ) VALUES (1, 0, 0, 0, NULL, NULL);
+        CREATE TABLE IF NOT EXISTS dashboard_days (
+            day INTEGER PRIMARY KEY
+        );",
+    ),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -65,10 +87,144 @@ pub struct HistoryEntry {
     pub post_process_requested: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+pub struct DashboardStats {
+    pub daily_streak: u32,
+    pub total_words: u64,
+    pub average_words_per_minute: u32,
+    pub estimated_time_saved_minutes: u32,
+    pub dictation_count: u64,
+    pub total_dictation_minutes: u32,
+    pub last_dictation_timestamp: Option<i64>,
+}
+
 pub struct HistoryManager {
     app_handle: AppHandle,
     recordings_dir: PathBuf,
     db_path: PathBuf,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct DashboardStatsInput {
+    timestamp: i64,
+    text: String,
+    duration_seconds: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DashboardTotals {
+    total_words: u64,
+    total_duration_seconds: f64,
+    dictation_count: u64,
+    last_timestamp: Option<i64>,
+}
+
+const BASELINE_TYPING_WORDS_PER_MINUTE: f64 = 40.0;
+const SECONDS_PER_DAY: i64 = 86_400;
+
+fn count_transcript_words(text: &str) -> u64 {
+    text.split_whitespace()
+        .filter(|word| word.chars().any(|char| char.is_alphanumeric()))
+        .count() as u64
+}
+
+fn timestamp_day(timestamp: i64) -> i64 {
+    timestamp.div_euclid(SECONDS_PER_DAY)
+}
+
+fn calculate_daily_streak(days: &BTreeSet<i64>, now_timestamp: i64) -> u32 {
+    if days.is_empty() {
+        return 0;
+    }
+
+    let today = timestamp_day(now_timestamp);
+    let latest_day = *days.iter().next_back().unwrap();
+    if today.saturating_sub(latest_day) > 1 {
+        return 0;
+    }
+
+    let mut streak = 0;
+    let mut day = latest_day;
+    while days.contains(&day) {
+        streak += 1;
+        day -= 1;
+    }
+
+    streak
+}
+
+#[cfg(test)]
+fn calculate_dashboard_stats(inputs: &[DashboardStatsInput], now_timestamp: i64) -> DashboardStats {
+    let completed_inputs = inputs
+        .iter()
+        .filter(|input| !input.text.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    let total_words = completed_inputs
+        .iter()
+        .map(|input| count_transcript_words(&input.text))
+        .sum::<u64>();
+    let total_duration_seconds = completed_inputs
+        .iter()
+        .map(|input| input.duration_seconds.max(0.0))
+        .sum::<f64>();
+    let dictation_count = completed_inputs.len() as u64;
+    let days = completed_inputs
+        .iter()
+        .map(|input| timestamp_day(input.timestamp))
+        .collect::<BTreeSet<_>>();
+
+    let average_words_per_minute = if total_words > 0 && total_duration_seconds > 0.0 {
+        ((total_words as f64 / total_duration_seconds) * 60.0).round() as u32
+    } else {
+        0
+    };
+
+    let estimated_typing_minutes = total_words as f64 / BASELINE_TYPING_WORDS_PER_MINUTE;
+    let dictation_minutes = total_duration_seconds / 60.0;
+    let estimated_time_saved_minutes = (estimated_typing_minutes - dictation_minutes)
+        .max(0.0)
+        .round() as u32;
+
+    DashboardStats {
+        daily_streak: calculate_daily_streak(&days, now_timestamp),
+        total_words,
+        average_words_per_minute,
+        estimated_time_saved_minutes,
+        dictation_count,
+        total_dictation_minutes: dictation_minutes.round() as u32,
+        last_dictation_timestamp: completed_inputs.iter().map(|input| input.timestamp).max(),
+    }
+}
+
+fn dashboard_stats_from_totals(
+    totals: DashboardTotals,
+    active_days: &BTreeSet<i64>,
+    now_timestamp: i64,
+) -> DashboardStats {
+    let average_words_per_minute = if totals.total_words > 0 && totals.total_duration_seconds > 0.0
+    {
+        ((totals.total_words as f64 / totals.total_duration_seconds) * 60.0).round() as u32
+    } else {
+        0
+    };
+
+    let estimated_typing_minutes = totals.total_words as f64 / BASELINE_TYPING_WORDS_PER_MINUTE;
+    let dictation_minutes = totals.total_duration_seconds / 60.0;
+    let estimated_time_saved_minutes = (estimated_typing_minutes - dictation_minutes)
+        .max(0.0)
+        .round() as u32;
+
+    DashboardStats {
+        daily_streak: calculate_daily_streak(active_days, now_timestamp),
+        total_words: totals.total_words,
+        average_words_per_minute,
+        estimated_time_saved_minutes,
+        dictation_count: totals.dictation_count,
+        total_dictation_minutes: dictation_minutes.round() as u32,
+        last_dictation_timestamp: totals.last_timestamp,
+    }
 }
 
 impl HistoryManager {
@@ -92,6 +248,7 @@ impl HistoryManager {
 
         // Initialize database and run migrations synchronously
         manager.init_database()?;
+        manager.backfill_dashboard_stats_if_empty()?;
 
         Ok(manager)
     }
@@ -196,6 +353,42 @@ impl HistoryManager {
         Ok(Connection::open(&self.db_path)?)
     }
 
+    fn backfill_dashboard_stats_if_empty(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+        let existing_count: i64 = conn.query_row(
+            "SELECT dictation_count FROM dashboard_stats WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        if existing_count > 0 {
+            return Ok(());
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT file_name, timestamp, transcription_text, post_processed_text
+             FROM transcription_history
+             WHERE transcription_text != ''
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>("file_name")?,
+                row.get::<_, i64>("timestamp")?,
+                row.get::<_, String>("transcription_text")?,
+                row.get::<_, Option<String>>("post_processed_text")?,
+            ))
+        })?;
+
+        for row in rows {
+            let (file_name, timestamp, transcription_text, post_processed_text) = row?;
+            let text = post_processed_text.unwrap_or(transcription_text);
+            let duration_seconds = self.recording_duration_seconds(&file_name).unwrap_or(0.0);
+            Self::record_dashboard_dictation_with_conn(&conn, timestamp, &text, duration_seconds)?;
+        }
+
+        Ok(())
+    }
+
     fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
         Ok(HistoryEntry {
             id: row.get("id")?,
@@ -208,6 +401,56 @@ impl HistoryManager {
             post_process_prompt: row.get("post_process_prompt")?,
             post_process_requested: row.get("post_process_requested")?,
         })
+    }
+
+    fn record_dashboard_dictation(
+        &self,
+        timestamp: i64,
+        text: &str,
+        duration_seconds: f64,
+    ) -> Result<()> {
+        let conn = self.get_connection()?;
+        Self::record_dashboard_dictation_with_conn(&conn, timestamp, text, duration_seconds)
+    }
+
+    fn record_dashboard_dictation_with_conn(
+        conn: &Connection,
+        timestamp: i64,
+        text: &str,
+        duration_seconds: f64,
+    ) -> Result<()> {
+        let word_count = count_transcript_words(text);
+        if word_count == 0 {
+            return Ok(());
+        }
+
+        conn.execute(
+            "INSERT OR IGNORE INTO dashboard_stats (
+                id,
+                total_words,
+                total_duration_seconds,
+                dictation_count,
+                first_timestamp,
+                last_timestamp
+            ) VALUES (1, 0, 0, 0, NULL, NULL)",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE dashboard_stats
+             SET total_words = total_words + ?1,
+                 total_duration_seconds = total_duration_seconds + ?2,
+                 dictation_count = dictation_count + 1,
+                 first_timestamp = COALESCE(MIN(first_timestamp, ?3), ?3),
+                 last_timestamp = COALESCE(MAX(last_timestamp, ?3), ?3)
+             WHERE id = 1",
+            params![word_count as i64, duration_seconds.max(0.0), timestamp],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO dashboard_days (day) VALUES (?1)",
+            params![timestamp_day(timestamp)],
+        )?;
+
+        Ok(())
     }
 
     pub fn recordings_dir(&self) -> &std::path::Path {
@@ -264,6 +507,23 @@ impl HistoryManager {
         };
 
         debug!("Saved history entry with id {}", entry.id);
+
+        let dashboard_text = entry
+            .post_processed_text
+            .as_deref()
+            .unwrap_or(&entry.transcription_text);
+        if !dashboard_text.trim().is_empty() {
+            let duration_seconds = self
+                .recording_duration_seconds(&entry.file_name)
+                .unwrap_or_else(|err| {
+                    debug!(
+                        "Could not read duration for dashboard stats from {}: {}",
+                        entry.file_name, err
+                    );
+                    0.0
+                });
+            self.record_dashboard_dictation(timestamp, dashboard_text, duration_seconds)?;
+        }
 
         self.cleanup_old_entries()?;
 
@@ -504,6 +764,46 @@ impl HistoryManager {
         Ok(PaginatedHistory { entries, has_more })
     }
 
+    pub fn get_dashboard_stats(&self) -> Result<DashboardStats> {
+        let conn = self.get_connection()?;
+        let totals = conn.query_row(
+            "SELECT
+                total_words,
+                total_duration_seconds,
+                dictation_count,
+                first_timestamp,
+                last_timestamp
+             FROM dashboard_stats
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok(DashboardTotals {
+                    total_words: row.get::<_, i64>(0)?.max(0) as u64,
+                    total_duration_seconds: row.get::<_, f64>(1)?.max(0.0),
+                    dictation_count: row.get::<_, i64>(2)?.max(0) as u64,
+                    last_timestamp: row.get(4)?,
+                })
+            },
+        )?;
+        let mut stmt = conn.prepare("SELECT day FROM dashboard_days")?;
+        let days = stmt
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+
+        Ok(dashboard_stats_from_totals(
+            totals,
+            &days,
+            Utc::now().timestamp(),
+        ))
+    }
+
+    fn recording_duration_seconds(&self, file_name: &str) -> Result<f64> {
+        let path = self.get_audio_file_path(file_name);
+        let reader = hound::WavReader::open(&path)?;
+        let sample_rate = reader.spec().sample_rate.max(1);
+        Ok(reader.len() as f64 / sample_rate as f64)
+    }
+
     #[cfg(test)]
     fn get_latest_entry_with_conn(conn: &Connection) -> Result<Option<HistoryEntry>> {
         let mut stmt = conn.prepare(
@@ -673,6 +973,57 @@ mod tests {
         conn
     }
 
+    #[test]
+    fn migrations_create_dashboard_stats_tables() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations.to_latest(&mut conn).expect("run migrations");
+
+        let stats_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dashboard_stats", [], |row| row.get(0))
+            .expect("dashboard_stats exists");
+        let days_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dashboard_days", [], |row| row.get(0))
+            .expect("dashboard_days exists");
+
+        assert_eq!(stats_count, 1);
+        assert_eq!(days_count, 0);
+    }
+
+    #[test]
+    fn dashboard_stats_recording_initializes_empty_stats_row() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations.to_latest(&mut conn).expect("run migrations");
+
+        HistoryManager::record_dashboard_dictation_with_conn(&conn, 100, "one two", 1.0)
+            .expect("record dashboard stats");
+
+        let totals: (i64, f64, i64, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT total_words,
+                        total_duration_seconds,
+                        dictation_count,
+                        first_timestamp,
+                        last_timestamp
+                 FROM dashboard_stats
+                 WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read dashboard stats");
+
+        assert_eq!(totals, (2, 1.0, 1, Some(100), Some(100)));
+    }
+
     fn insert_entry(conn: &Connection, timestamp: i64, text: &str, post_processed: Option<&str>) {
         conn.execute(
             "INSERT INTO transcription_history (
@@ -733,5 +1084,82 @@ mod tests {
 
         assert_eq!(entry.timestamp, 100);
         assert_eq!(entry.transcription_text, "completed");
+    }
+
+    #[test]
+    fn dashboard_stats_calculates_words_speed_and_time_saved() {
+        let now = SECONDS_PER_DAY * 10;
+        let inputs = vec![
+            DashboardStatsInput {
+                timestamp: now - SECONDS_PER_DAY,
+                text: "one two three four five six seven eight".to_string(),
+                duration_seconds: 6.0,
+            },
+            DashboardStatsInput {
+                timestamp: now,
+                text: "nine ten eleven twelve".to_string(),
+                duration_seconds: 6.0,
+            },
+        ];
+
+        let stats = calculate_dashboard_stats(&inputs, now);
+
+        assert_eq!(stats.total_words, 12);
+        assert_eq!(stats.dictation_count, 2);
+        assert_eq!(stats.average_words_per_minute, 60);
+        assert_eq!(stats.estimated_time_saved_minutes, 0);
+        assert_eq!(stats.total_dictation_minutes, 0);
+        assert_eq!(stats.daily_streak, 2);
+        assert_eq!(stats.last_dictation_timestamp, Some(now));
+    }
+
+    #[test]
+    fn dashboard_stats_estimates_saved_time_against_typing_baseline() {
+        let inputs = vec![DashboardStatsInput {
+            timestamp: 100,
+            text: (0..120).map(|_| "word").collect::<Vec<_>>().join(" "),
+            duration_seconds: 60.0,
+        }];
+
+        let stats = calculate_dashboard_stats(&inputs, 100);
+
+        assert_eq!(stats.total_words, 120);
+        assert_eq!(stats.average_words_per_minute, 120);
+        assert_eq!(stats.estimated_time_saved_minutes, 2);
+        assert_eq!(stats.total_dictation_minutes, 1);
+    }
+
+    #[test]
+    fn dashboard_stats_streak_expires_after_missing_yesterday() {
+        let now = SECONDS_PER_DAY * 10;
+        let inputs = vec![DashboardStatsInput {
+            timestamp: now - (SECONDS_PER_DAY * 2),
+            text: "old words".to_string(),
+            duration_seconds: 3.0,
+        }];
+
+        let stats = calculate_dashboard_stats(&inputs, now);
+
+        assert_eq!(stats.daily_streak, 0);
+    }
+
+    #[test]
+    fn dashboard_stats_from_totals_does_not_depend_on_retained_history_entries() {
+        let now = SECONDS_PER_DAY * 10;
+        let mut active_days = BTreeSet::new();
+        active_days.insert(timestamp_day(now));
+        let totals = DashboardTotals {
+            total_words: 500,
+            total_duration_seconds: 250.0,
+            dictation_count: 5,
+            last_timestamp: Some(now),
+        };
+
+        let stats = dashboard_stats_from_totals(totals, &active_days, now);
+
+        assert_eq!(stats.total_words, 500);
+        assert_eq!(stats.average_words_per_minute, 120);
+        assert_eq!(stats.dictation_count, 5);
+        assert_eq!(stats.daily_streak, 1);
     }
 }

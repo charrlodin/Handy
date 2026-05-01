@@ -1,7 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { Check, Copy, FolderOpen, RotateCcw, Star, Trash2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FolderOpen,
+  Pencil,
+  RotateCcw,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -14,6 +23,7 @@ import { useOsType } from "@/hooks/useOsType";
 import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
+import { Textarea } from "../../ui/Textarea";
 
 const IconButton: React.FC<{
   onClick: () => void;
@@ -223,6 +233,20 @@ export const HistorySettings: React.FC = () => {
     }
   };
 
+  const learnHistoryEntryCorrections = async (
+    id: number,
+    correctedText: string,
+  ) => {
+    const result = await commands.learnHistoryEntryCorrections(
+      id,
+      correctedText,
+    );
+    if (result.status !== "ok") {
+      throw new Error(String(result.error));
+    }
+    return result.data;
+  };
+
   const openRecordingsFolder = async () => {
     try {
       const result = await commands.openRecordingsFolder();
@@ -261,6 +285,7 @@ export const HistorySettings: React.FC = () => {
               getAudioUrl={getAudioUrl}
               deleteAudio={deleteAudioEntry}
               retryTranscription={retryHistoryEntry}
+              learnCorrections={learnHistoryEntryCorrections}
             />
           ))}
         </div>
@@ -299,6 +324,7 @@ interface HistoryEntryProps {
   getAudioUrl: (fileName: string) => Promise<string | null>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
+  learnCorrections: (id: number, correctedText: string) => Promise<unknown[]>;
 }
 
 const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
@@ -308,12 +334,22 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   getAudioUrl,
   deleteAudio,
   retryTranscription,
+  learnCorrections,
 }) => {
   const { t, i18n } = useTranslation();
   const [showCopied, setShowCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [editingCorrection, setEditingCorrection] = useState(false);
+  const [correctedText, setCorrectedText] = useState(entry.transcription_text);
+  const [learningCorrection, setLearningCorrection] = useState(false);
 
   const hasTranscription = entry.transcription_text.trim().length > 0;
+
+  useEffect(() => {
+    if (!editingCorrection) {
+      setCorrectedText(entry.transcription_text);
+    }
+  }, [editingCorrection, entry.transcription_text]);
 
   const handleLoadAudio = useCallback(
     () => getAudioUrl(entry.file_name),
@@ -348,6 +384,29 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
       toast.error(t("settings.history.retranscribeError"));
     } finally {
       setRetrying(false);
+    }
+  };
+
+  const handleStartCorrection = () => {
+    setCorrectedText(entry.transcription_text);
+    setEditingCorrection(true);
+  };
+
+  const handleSaveCorrection = async () => {
+    try {
+      setLearningCorrection(true);
+      const learned = await learnCorrections(entry.id, correctedText);
+      setEditingCorrection(false);
+      toast.success(
+        learned.length > 0
+          ? t("settings.history.correctionSaved")
+          : t("settings.history.correctionNoChanges"),
+      );
+    } catch (error) {
+      console.error("Failed to learn correction:", error);
+      toast.error(t("settings.history.correctionError"));
+    } finally {
+      setLearningCorrection(false);
     }
   };
 
@@ -387,7 +446,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
           </IconButton>
           <IconButton
             onClick={handleRetranscribe}
-            disabled={retrying}
+            disabled={retrying || editingCorrection}
             title={t("settings.history.retranscribe")}
           >
             <RotateCcw
@@ -401,8 +460,15 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             />
           </IconButton>
           <IconButton
+            onClick={handleStartCorrection}
+            disabled={!hasTranscription || retrying || editingCorrection}
+            title={t("settings.history.teachCorrection")}
+          >
+            <Pencil width={16} height={16} />
+          </IconButton>
+          <IconButton
             onClick={handleDeleteEntry}
-            disabled={retrying}
+            disabled={retrying || editingCorrection}
             title={t("settings.history.delete")}
           >
             <Trash2 width={16} height={16} />
@@ -410,34 +476,74 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
         </div>
       </div>
 
-      <p
-        className={`italic text-sm pb-2 ${
-          retrying
-            ? ""
+      {editingCorrection ? (
+        <div className="flex flex-col gap-2">
+          <Textarea
+            value={correctedText}
+            onChange={(event) => setCorrectedText(event.target.value)}
+            placeholder={t("settings.history.correctedTranscriptPlaceholder")}
+            className="w-full min-h-[96px] font-normal"
+            disabled={learningCorrection}
+          />
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => setEditingCorrection(false)}
+              disabled={learningCorrection}
+              className="flex items-center gap-1"
+            >
+              <X width={14} height={14} />
+              <span>{t("settings.history.cancelCorrection")}</span>
+            </Button>
+            <Button
+              type="button"
+              variant="primary-soft"
+              size="sm"
+              onClick={handleSaveCorrection}
+              disabled={
+                learningCorrection ||
+                correctedText.trim().length === 0 ||
+                correctedText.trim() === entry.transcription_text.trim()
+              }
+              className="flex items-center gap-1"
+            >
+              <Check width={14} height={14} />
+              <span>{t("settings.history.saveCorrection")}</span>
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <p
+          className={`italic text-sm pb-2 ${
+            retrying
+              ? ""
+              : hasTranscription
+                ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
+                : "text-text/40"
+          }`}
+          style={
+            retrying
+              ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
+              : undefined
+          }
+        >
+          {retrying && (
+            <style>{`
+              @keyframes transcribe-pulse {
+                0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
+                50% { color: color-mix(in srgb, var(--color-text) 90%, transparent); }
+              }
+            `}</style>
+          )}
+          {retrying
+            ? t("settings.history.transcribing")
             : hasTranscription
-              ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
-              : "text-text/40"
-        }`}
-        style={
-          retrying
-            ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
-            : undefined
-        }
-      >
-        {retrying && (
-          <style>{`
-            @keyframes transcribe-pulse {
-              0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
-              50% { color: color-mix(in srgb, var(--color-text) 90%, transparent); }
-            }
-          `}</style>
-        )}
-        {retrying
-          ? t("settings.history.transcribing")
-          : hasTranscription
-            ? entry.transcription_text
-            : t("settings.history.transcriptionFailed")}
-      </p>
+              ? entry.transcription_text
+              : t("settings.history.transcriptionFailed")}
+        </p>
+      )}
 
       <AudioPlayer onLoadRequest={handleLoadAudio} className="w-full" />
     </div>

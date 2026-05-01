@@ -15,7 +15,8 @@
     "postProcessing": "Son İşlem",
     "history": "Geçmiş",
     "debug": "Hata Ayıklama",
-    "about": "Hakkında"
+    "about": "Hakkında",
+    "dashboard": "Dashboard"
   },
   "onboarding": {
     "subtitle": "Başlamak için bir transkripsiyon modeli seçin",
@@ -194,6 +195,10 @@
           "transcribe_with_post_process": {
             "name": "Son İşlem Kısayolu",
             "description": "İsteğe bağlı: Transkripsiyonunuza her zaman AI son işleme uygulayan özel bir kısayol tuşu."
+          },
+          "continuous_dictation": {
+            "name": "Continuous Dictation Shortcut",
+            "description": "The keyboard shortcut to toggle continuous dictation on and off."
           }
         },
         "errors": {
@@ -213,6 +218,43 @@
       "pushToTalk": {
         "label": "Bas Konuş",
         "description": "Kaydetmek için basılı tutun, durdurmak için bırakın"
+      },
+      "continuousDictation": {
+        "label": "Continuous Dictation Mode",
+        "description": "Press a separate shortcut once to start recording, then press it again to stop and transcribe."
+      },
+      "liveTranscript": {
+        "title": "Live Transcript",
+        "enabled": {
+          "label": "Show Live Transcript",
+          "description": "Show partial transcription text in the recording overlay while you speak."
+        },
+        "fontSize": {
+          "label": "Font Size",
+          "description": "Set the live transcript text size.",
+          "options": {
+            "small": "Small",
+            "medium": "Medium",
+            "large": "Large"
+          }
+        },
+        "opacity": {
+          "label": "Background Opacity",
+          "description": "Set the live transcript background opacity."
+        },
+        "maxLines": {
+          "label": "Max Lines",
+          "description": "Limit how many transcript lines are visible."
+        },
+        "position": {
+          "label": "Position",
+          "description": "Choose where live transcript feedback appears.",
+          "options": {
+            "existingOverlay": "Existing overlay position",
+            "nearCursor": "Near cursor",
+            "bottomCenter": "Bottom center"
+          }
+        }
       }
     },
     "sound": {
@@ -431,7 +473,14 @@
       "retranscribe": "Yeniden yazıya dök",
       "retranscribeError": "Yeniden yazıya dökme başarısız oldu. Lütfen tekrar deneyin.",
       "transcribing": "Yazıya döküyor...",
-      "transcriptionFailed": "Transkripsiyon başarısız oldu. Yeniden deneme simgesini kullanarak tekrar yazıya dökebilirsiniz."
+      "transcriptionFailed": "Transkripsiyon başarısız oldu. Yeniden deneme simgesini kullanarak tekrar yazıya dökebilirsiniz.",
+      "teachCorrection": "Teach Handy this correction",
+      "correctedTranscriptPlaceholder": "Edit this transcript to teach Handy what you meant",
+      "saveCorrection": "Learn correction",
+      "cancelCorrection": "Cancel",
+      "correctionSaved": "Correction learned",
+      "correctionNoChanges": "No correction found",
+      "correctionError": "Failed to learn correction. Please try again."
     },
     "debug": {
       "title": "Hata Ayıklama",
@@ -608,5 +657,38 @@
   "overlay": {
     "transcribing": "Transkribe ediliyor...",
     "processing": "İşleniyor..."
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "description": "A snapshot of how much Handy has helped you write.",
+    "refresh": "Refresh",
+    "cards": {
+      "streak": {
+        "title": "Daily streak",
+        "value_one": "{{count}} day",
+        "value_other": "{{count}} days",
+        "activeDescription": "You dictated recently. Keep it going.",
+        "emptyDescription": "Start dictating to build a streak."
+      },
+      "speed": {
+        "title": "Average speed",
+        "value": "{{count}} wpm",
+        "description": "Based on completed dictations with saved audio."
+      },
+      "words": {
+        "title": "Total words dictated",
+        "description_one": "Across {{count}} completed dictation.",
+        "description_other": "Across {{count}} completed dictations."
+      },
+      "timeSaved": {
+        "title": "Estimated time saved",
+        "description": "Compared with typing at 40 words per minute."
+      }
+    },
+    "footer": {
+      "empty": "Your dashboard will populate after your first completed dictation.",
+      "withHistory_one": "{{count}} dictation captured over {{minutes}} of speaking.",
+      "withHistory_other": "{{count}} dictations captured over {{minutes}} of speaking."
+    }
   }
 }

@@ -9,7 +9,9 @@ use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID}
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
-    self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
+    self, clear_live_transcript_overlay, emit_final_transcript_overlay, show_processing_overlay,
+    show_recording_overlay, show_transcribing_overlay, start_live_transcript_session,
+    stop_live_transcript_session,
 };
 use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
@@ -346,6 +348,40 @@ pub(crate) struct ProcessedTranscription {
     pub post_process_prompt: Option<String>,
 }
 
+fn transcription_with_live_fallback(
+    transcription_result: anyhow::Result<String>,
+    live_partial: Option<&str>,
+) -> anyhow::Result<String> {
+    match transcription_result {
+        Ok(transcription) if transcription.trim().is_empty() => {
+            if let Some(partial) = live_partial
+                .map(str::trim)
+                .filter(|partial| !partial.is_empty())
+            {
+                debug!("Final transcription was empty; using live partial fallback");
+                Ok(partial.to_string())
+            } else {
+                Ok(transcription)
+            }
+        }
+        Ok(transcription) => Ok(transcription),
+        Err(err) => {
+            if let Some(partial) = live_partial
+                .map(str::trim)
+                .filter(|partial| !partial.is_empty())
+            {
+                warn!(
+                    "Final transcription failed ({}); using live partial fallback",
+                    err
+                );
+                Ok(partial.to_string())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 pub(crate) async fn process_transcription_output(
     app: &AppHandle,
     transcription: &str,
@@ -406,6 +442,7 @@ impl ShortcutAction for TranscribeAction {
 
         let binding_id = binding_id.to_string();
         change_tray_icon(app, TrayIconState::Recording);
+        clear_live_transcript_overlay(app);
         show_recording_overlay(app);
 
         // Get the microphone mode to determine audio feedback timing
@@ -460,6 +497,7 @@ impl ShortcutAction for TranscribeAction {
         if recording_error.is_none() {
             // Dynamically register the cancel shortcut in a separate task to avoid deadlock
             shortcut::register_cancel_shortcut(app);
+            start_live_transcript_session(app, &binding_id);
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
@@ -492,6 +530,7 @@ impl ShortcutAction for TranscribeAction {
     fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
         // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
+        let live_partial_fallback = stop_live_transcript_session(app);
 
         let stop_time = Instant::now();
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
@@ -543,6 +582,30 @@ impl ShortcutAction for TranscribeAction {
                         crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
                     });
 
+                    let live_partial_fallback = if let Some(live_session) = live_partial_fallback {
+                        let partial_before_join = live_session.latest_partial();
+                        debug!(
+                                "Waiting for live transcript worker before final transcription; partial available: {}",
+                                partial_before_join.is_some()
+                            );
+                        match tauri::async_runtime::spawn_blocking(move || live_session.finish())
+                            .await
+                        {
+                            Ok(partial_after_join) => {
+                                if partial_after_join.is_some() {
+                                    debug!("Live transcript fallback available after worker stop");
+                                }
+                                partial_after_join.or(partial_before_join)
+                            }
+                            Err(err) => {
+                                warn!("Live transcript worker join failed: {}", err);
+                                partial_before_join
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     // Transcribe concurrently with WAV save
                     let transcription_time = Instant::now();
                     let transcription_result = tm.transcribe(samples);
@@ -571,7 +634,10 @@ impl ShortcutAction for TranscribeAction {
                         }
                     };
 
-                    match transcription_result {
+                    match transcription_with_live_fallback(
+                        transcription_result,
+                        live_partial_fallback.as_deref(),
+                    ) {
                         Ok(transcription) => {
                             debug!(
                                 "Transcription completed in {:?}: '{}'",
@@ -606,6 +672,7 @@ impl ShortcutAction for TranscribeAction {
                                 let ah_clone = ah.clone();
                                 let paste_time = Instant::now();
                                 let final_text = processed.final_text;
+                                emit_final_transcript_overlay(&ah, &final_text);
                                 ah.run_on_main_thread(move || {
                                     match utils::paste(final_text, ah_clone.clone()) {
                                         Ok(()) => debug!(
@@ -710,6 +777,12 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
         Arc::new(TranscribeAction { post_process: true }) as Arc<dyn ShortcutAction>,
     );
     map.insert(
+        "continuous_dictation".to_string(),
+        Arc::new(TranscribeAction {
+            post_process: false,
+        }) as Arc<dyn ShortcutAction>,
+    );
+    map.insert(
         "cancel".to_string(),
         Arc::new(CancelAction) as Arc<dyn ShortcutAction>,
     );
@@ -719,3 +792,39 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
     );
     map
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_partial_fallback_replaces_empty_final_transcription() {
+        let result =
+            transcription_with_live_fallback(Ok(String::new()), Some("captured live words"))
+                .expect("fallback succeeds");
+
+        assert_eq!(result, "captured live words");
+    }
+
+    #[test]
+    fn live_partial_fallback_preserves_non_empty_final_transcription() {
+        let result = transcription_with_live_fallback(
+            Ok("final words".to_string()),
+            Some("captured live words"),
+        )
+        .expect("final transcription succeeds");
+
+        assert_eq!(result, "final words");
+    }
+
+    #[test]
+    fn live_partial_fallback_recovers_from_final_error() {
+        let result = transcription_with_live_fallback(
+            Err(anyhow::anyhow!("engine failed")),
+            Some("captured live words"),
+        )
+        .expect("fallback succeeds");
+
+        assert_eq!(result, "captured live words");
+    }
+}
