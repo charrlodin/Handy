@@ -801,6 +801,14 @@ async getDashboardStats() : Promise<Result<DashboardStats, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getDashboardUsageSeries(period: DashboardUsagePeriod) : Promise<Result<DashboardUsagePoint[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_dashboard_usage_series", { period }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getHistoryEntries(cursor: number | null, limit: number | null) : Promise<Result<PaginatedHistory, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_history_entries", { cursor, limit }) };
@@ -904,6 +912,8 @@ export type BindingResponse = { success: boolean; binding: ShortcutBinding | nul
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type DashboardStats = { daily_streak: number; total_words: number; average_words_per_minute: number; estimated_time_saved_minutes: number; dictation_count: number; total_dictation_minutes: number; last_dictation_timestamp: number | null }
+export type DashboardUsagePeriod = "daily" | "weekly"
+export type DashboardUsagePoint = { start_timestamp: number; end_timestamp: number; total_words: number; dictation_count: number }
 export type EngineType = "Whisper" | "Parakeet" | "Moonshine" | "MoonshineStreaming" | "SenseVoice" | "GigaAM" | "Canary" | "Cohere"
 export type GpuDeviceOption = { id: number; name: string; total_vram_mb: number }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean }

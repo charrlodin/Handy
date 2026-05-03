@@ -689,6 +689,17 @@
       "empty": "Your dashboard will populate after your first completed dictation.",
       "withHistory_one": "{{count}} dictation captured over {{minutes}} of speaking.",
       "withHistory_other": "{{count}} dictations captured over {{minutes}} of speaking."
+    },
+    "usage": {
+      "title": "Usage",
+      "description": "Words dictated over time.",
+      "period": {
+        "daily": "Daily",
+        "weekly": "Weekly"
+      },
+      "peak": "{{count}} words in the busiest period.",
+      "empty": "Usage will appear after your next dictation.",
+      "unit": "Words dictated"
     }
   }
 }

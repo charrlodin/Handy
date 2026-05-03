@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -53,6 +53,14 @@ static MIGRATIONS: &[M] = &[
             day INTEGER PRIMARY KEY
         );",
     ),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS dashboard_usage_days (
+            day INTEGER PRIMARY KEY,
+            total_words INTEGER NOT NULL DEFAULT 0,
+            total_duration_seconds REAL NOT NULL DEFAULT 0,
+            dictation_count INTEGER NOT NULL DEFAULT 0
+        );",
+    ),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -98,6 +106,21 @@ pub struct DashboardStats {
     pub last_dictation_timestamp: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DashboardUsagePeriod {
+    Daily,
+    Weekly,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+pub struct DashboardUsagePoint {
+    pub start_timestamp: i64,
+    pub end_timestamp: i64,
+    pub total_words: u64,
+    pub dictation_count: u64,
+}
+
 pub struct HistoryManager {
     app_handle: AppHandle,
     recordings_dir: PathBuf,
@@ -122,6 +145,8 @@ struct DashboardTotals {
 
 const BASELINE_TYPING_WORDS_PER_MINUTE: f64 = 40.0;
 const SECONDS_PER_DAY: i64 = 86_400;
+const DAILY_USAGE_POINT_COUNT: i64 = 14;
+const WEEKLY_USAGE_POINT_COUNT: i64 = 8;
 
 fn count_transcript_words(text: &str) -> u64 {
     text.split_whitespace()
@@ -131,6 +156,14 @@ fn count_transcript_words(text: &str) -> u64 {
 
 fn timestamp_day(timestamp: i64) -> i64 {
     timestamp.div_euclid(SECONDS_PER_DAY)
+}
+
+fn day_start_timestamp(day: i64) -> i64 {
+    day.saturating_mul(SECONDS_PER_DAY)
+}
+
+fn week_start_day(day: i64) -> i64 {
+    day - (day + 3).rem_euclid(7)
 }
 
 fn calculate_daily_streak(days: &BTreeSet<i64>, now_timestamp: i64) -> u32 {
@@ -249,6 +282,7 @@ impl HistoryManager {
         // Initialize database and run migrations synchronously
         manager.init_database()?;
         manager.backfill_dashboard_stats_if_empty()?;
+        manager.backfill_dashboard_usage_if_empty()?;
 
         Ok(manager)
     }
@@ -389,6 +423,41 @@ impl HistoryManager {
         Ok(())
     }
 
+    fn backfill_dashboard_usage_if_empty(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+        let existing_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM dashboard_usage_days", [], |row| {
+                row.get(0)
+            })?;
+        if existing_count > 0 {
+            return Ok(());
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT file_name, timestamp, transcription_text, post_processed_text
+             FROM transcription_history
+             WHERE transcription_text != ''
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>("file_name")?,
+                row.get::<_, i64>("timestamp")?,
+                row.get::<_, String>("transcription_text")?,
+                row.get::<_, Option<String>>("post_processed_text")?,
+            ))
+        })?;
+
+        for row in rows {
+            let (file_name, timestamp, transcription_text, post_processed_text) = row?;
+            let text = post_processed_text.unwrap_or(transcription_text);
+            let duration_seconds = self.recording_duration_seconds(&file_name).unwrap_or(0.0);
+            Self::record_dashboard_usage_with_conn(&conn, timestamp, &text, duration_seconds)?;
+        }
+
+        Ok(())
+    }
+
     fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
         Ok(HistoryEntry {
             id: row.get("id")?,
@@ -448,6 +517,39 @@ impl HistoryManager {
         conn.execute(
             "INSERT OR IGNORE INTO dashboard_days (day) VALUES (?1)",
             params![timestamp_day(timestamp)],
+        )?;
+        Self::record_dashboard_usage_with_conn(conn, timestamp, text, duration_seconds)?;
+
+        Ok(())
+    }
+
+    fn record_dashboard_usage_with_conn(
+        conn: &Connection,
+        timestamp: i64,
+        text: &str,
+        duration_seconds: f64,
+    ) -> Result<()> {
+        let word_count = count_transcript_words(text);
+        if word_count == 0 {
+            return Ok(());
+        }
+
+        conn.execute(
+            "INSERT INTO dashboard_usage_days (
+                day,
+                total_words,
+                total_duration_seconds,
+                dictation_count
+            ) VALUES (?1, ?2, ?3, 1)
+            ON CONFLICT(day) DO UPDATE SET
+                total_words = total_words + excluded.total_words,
+                total_duration_seconds = total_duration_seconds + excluded.total_duration_seconds,
+                dictation_count = dictation_count + 1",
+            params![
+                timestamp_day(timestamp),
+                word_count as i64,
+                duration_seconds.max(0.0)
+            ],
         )?;
 
         Ok(())
@@ -797,6 +899,95 @@ impl HistoryManager {
         ))
     }
 
+    pub fn get_dashboard_usage_series(
+        &self,
+        period: DashboardUsagePeriod,
+    ) -> Result<Vec<DashboardUsagePoint>> {
+        let conn = self.get_connection()?;
+        Self::get_dashboard_usage_series_with_conn(&conn, period, Utc::now().timestamp())
+    }
+
+    fn get_dashboard_usage_series_with_conn(
+        conn: &Connection,
+        period: DashboardUsagePeriod,
+        now_timestamp: i64,
+    ) -> Result<Vec<DashboardUsagePoint>> {
+        match period {
+            DashboardUsagePeriod::Daily => {
+                let today = timestamp_day(now_timestamp);
+                let start_day = today - (DAILY_USAGE_POINT_COUNT - 1);
+                let usage_by_day = Self::get_dashboard_usage_days(conn, start_day, today + 1)?;
+
+                Ok((0..DAILY_USAGE_POINT_COUNT)
+                    .map(|offset| {
+                        let day = start_day + offset;
+                        let usage = usage_by_day.get(&day).copied().unwrap_or_default();
+                        DashboardUsagePoint {
+                            start_timestamp: day_start_timestamp(day),
+                            end_timestamp: day_start_timestamp(day + 1),
+                            total_words: usage.0,
+                            dictation_count: usage.1,
+                        }
+                    })
+                    .collect())
+            }
+            DashboardUsagePeriod::Weekly => {
+                let current_week_start = week_start_day(timestamp_day(now_timestamp));
+                let start_week = current_week_start - ((WEEKLY_USAGE_POINT_COUNT - 1) * 7);
+                let usage_by_day =
+                    Self::get_dashboard_usage_days(conn, start_week, current_week_start + 7)?;
+
+                Ok((0..WEEKLY_USAGE_POINT_COUNT)
+                    .map(|offset| {
+                        let week_start = start_week + (offset * 7);
+                        let (total_words, dictation_count) =
+                            (0..7).fold((0, 0), |(words, dictations), day_offset| {
+                                let usage = usage_by_day
+                                    .get(&(week_start + day_offset))
+                                    .copied()
+                                    .unwrap_or_default();
+                                (words + usage.0, dictations + usage.1)
+                            });
+                        DashboardUsagePoint {
+                            start_timestamp: day_start_timestamp(week_start),
+                            end_timestamp: day_start_timestamp(week_start + 7),
+                            total_words,
+                            dictation_count,
+                        }
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    fn get_dashboard_usage_days(
+        conn: &Connection,
+        start_day: i64,
+        end_day_exclusive: i64,
+    ) -> Result<BTreeMap<i64, (u64, u64)>> {
+        let mut stmt = conn.prepare(
+            "SELECT day, total_words, dictation_count
+             FROM dashboard_usage_days
+             WHERE day >= ?1 AND day < ?2
+             ORDER BY day ASC",
+        )?;
+        let rows = stmt.query_map(params![start_day, end_day_exclusive], |row| {
+            Ok((
+                row.get::<_, i64>("day")?,
+                row.get::<_, i64>("total_words")?.max(0) as u64,
+                row.get::<_, i64>("dictation_count")?.max(0) as u64,
+            ))
+        })?;
+
+        let mut usage_by_day = BTreeMap::new();
+        for row in rows {
+            let (day, total_words, dictation_count) = row?;
+            usage_by_day.insert(day, (total_words, dictation_count));
+        }
+
+        Ok(usage_by_day)
+    }
+
     fn recording_duration_seconds(&self, file_name: &str) -> Result<f64> {
         let path = self.get_audio_file_path(file_name);
         let reader = hound::WavReader::open(&path)?;
@@ -985,9 +1176,15 @@ mod tests {
         let days_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM dashboard_days", [], |row| row.get(0))
             .expect("dashboard_days exists");
+        let usage_days_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dashboard_usage_days", [], |row| {
+                row.get(0)
+            })
+            .expect("dashboard_usage_days exists");
 
         assert_eq!(stats_count, 1);
         assert_eq!(days_count, 0);
+        assert_eq!(usage_days_count, 0);
     }
 
     #[test]
@@ -1022,6 +1219,106 @@ mod tests {
             .expect("read dashboard stats");
 
         assert_eq!(totals, (2, 1.0, 1, Some(100), Some(100)));
+    }
+
+    #[test]
+    fn dashboard_usage_recording_accumulates_words_by_day() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations.to_latest(&mut conn).expect("run migrations");
+
+        let timestamp = SECONDS_PER_DAY * 5;
+        HistoryManager::record_dashboard_dictation_with_conn(&conn, timestamp, "one two", 2.0)
+            .expect("record first dashboard usage");
+        HistoryManager::record_dashboard_dictation_with_conn(
+            &conn,
+            timestamp + 3600,
+            "three four five",
+            3.0,
+        )
+        .expect("record second dashboard usage");
+
+        let usage: (i64, f64, i64) = conn
+            .query_row(
+                "SELECT total_words, total_duration_seconds, dictation_count
+                 FROM dashboard_usage_days
+                 WHERE day = ?1",
+                params![timestamp_day(timestamp)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read usage day");
+
+        assert_eq!(usage, (5, 5.0, 2));
+    }
+
+    #[test]
+    fn dashboard_daily_usage_series_includes_empty_days() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations.to_latest(&mut conn).expect("run migrations");
+
+        let now = SECONDS_PER_DAY * 20;
+        HistoryManager::record_dashboard_dictation_with_conn(
+            &conn,
+            now - (SECONDS_PER_DAY * 2),
+            "one two three",
+            3.0,
+        )
+        .expect("record earlier usage");
+        HistoryManager::record_dashboard_dictation_with_conn(&conn, now, "four five", 2.0)
+            .expect("record today usage");
+
+        let series = HistoryManager::get_dashboard_usage_series_with_conn(
+            &conn,
+            DashboardUsagePeriod::Daily,
+            now,
+        )
+        .expect("read daily series");
+
+        assert_eq!(series.len(), 14);
+        assert_eq!(series[11].total_words, 3);
+        assert_eq!(series[11].dictation_count, 1);
+        assert_eq!(series[12].total_words, 0);
+        assert_eq!(series[13].total_words, 2);
+    }
+
+    #[test]
+    fn dashboard_weekly_usage_series_rolls_days_into_weeks() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations.to_latest(&mut conn).expect("run migrations");
+
+        let monday = SECONDS_PER_DAY * 18;
+        let now = monday + (SECONDS_PER_DAY * 3);
+        HistoryManager::record_dashboard_dictation_with_conn(
+            &conn,
+            monday - (SECONDS_PER_DAY * 7),
+            "previous week",
+            2.0,
+        )
+        .expect("record previous week usage");
+        HistoryManager::record_dashboard_dictation_with_conn(&conn, monday, "one two three", 3.0)
+            .expect("record week start usage");
+        HistoryManager::record_dashboard_dictation_with_conn(
+            &conn,
+            monday + (SECONDS_PER_DAY * 2),
+            "four five",
+            2.0,
+        )
+        .expect("record same week usage");
+
+        let series = HistoryManager::get_dashboard_usage_series_with_conn(
+            &conn,
+            DashboardUsagePeriod::Weekly,
+            now,
+        )
+        .expect("read weekly series");
+
+        assert_eq!(series.len(), 8);
+        assert_eq!(series[6].total_words, 2);
+        assert_eq!(series[6].dictation_count, 1);
+        assert_eq!(series[7].total_words, 5);
+        assert_eq!(series[7].dictation_count, 2);
     }
 
     fn insert_entry(conn: &Connection, timestamp: i64, text: &str, post_processed: Option<&str>) {

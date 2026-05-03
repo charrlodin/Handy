@@ -8,6 +8,8 @@ use crate::settings::{self, TranscriptCorrection};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
+use crate::managers::history::{DashboardUsagePeriod, DashboardUsagePoint};
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_history_entries(
@@ -30,6 +32,18 @@ pub async fn get_dashboard_stats(
 ) -> Result<DashboardStats, String> {
     history_manager
         .get_dashboard_stats()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_dashboard_usage_series(
+    _app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    period: DashboardUsagePeriod,
+) -> Result<Vec<DashboardUsagePoint>, String> {
+    history_manager
+        .get_dashboard_usage_series(period)
         .map_err(|e| e.to_string())
 }
 

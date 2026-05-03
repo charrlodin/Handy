@@ -1,7 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Clock, Gauge, RefreshCw, TrendingUp } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  Clock,
+  Gauge,
+  RefreshCw,
+  TrendingUp,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { commands, events, type DashboardStats } from "@/bindings";
+import {
+  commands,
+  events,
+  type DashboardStats,
+  type DashboardUsagePeriod,
+  type DashboardUsagePoint,
+} from "@/bindings";
 import { Button } from "../../ui/Button";
 
 const formatNumber = (value: number): string =>
@@ -39,22 +52,162 @@ const MetricCard: React.FC<{
   </div>
 );
 
+const periodOptions: DashboardUsagePeriod[] = ["daily", "weekly"];
+
+const formatPeriodLabel = (
+  point: DashboardUsagePoint,
+  period: DashboardUsagePeriod,
+): string => {
+  const startDate = new Date(point.start_timestamp * 1000);
+  if (period === "daily") {
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: "short",
+    }).format(startDate);
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+  }).format(startDate);
+};
+
+const UsageChart: React.FC<{
+  period: DashboardUsagePeriod;
+  points: DashboardUsagePoint[];
+  onPeriodChange: (period: DashboardUsagePeriod) => void;
+}> = ({ period, points, onPeriodChange }) => {
+  const { t } = useTranslation();
+  const maxWords = Math.max(...points.map((point) => point.total_words), 0);
+  const hasUsage = maxWords > 0;
+  const chartHeight = 124;
+  const barWidth = points.length > 8 ? 22 : 34;
+  const gap = points.length > 8 ? 10 : 18;
+  const chartWidth = points.length * barWidth + (points.length - 1) * gap;
+
+  return (
+    <div className="bg-background border border-mid-gray/20 rounded-lg p-4 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-medium text-mid-gray uppercase tracking-wide">
+              {t("dashboard.usage.title")}
+            </p>
+            <BarChart3
+              width={16}
+              height={16}
+              className="text-logo-primary/90 shrink-0"
+            />
+          </div>
+          <p className="text-sm text-mid-gray mt-1">
+            {t("dashboard.usage.description")}
+          </p>
+        </div>
+
+        <div className="flex items-center rounded-lg border border-mid-gray/30 bg-mid-gray/10 p-0.5 shrink-0">
+          {periodOptions.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onPeriodChange(option)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                period === option
+                  ? "bg-logo-primary text-white"
+                  : "text-mid-gray hover:text-text"
+              }`}
+              aria-pressed={period === option}
+            >
+              {t(`dashboard.usage.period.${option}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="overflow-x-auto pb-1">
+        <div
+          className="relative min-w-full"
+          style={{ width: Math.max(chartWidth, 560) }}
+        >
+          <div className="absolute inset-x-0 top-[32px] border-t border-mid-gray/10" />
+          <div className="absolute inset-x-0 top-[72px] border-t border-mid-gray/10" />
+          <svg
+            width={Math.max(chartWidth, 560)}
+            height={chartHeight + 34}
+            role="img"
+            aria-label={t("dashboard.usage.title")}
+          >
+            {points.map((point, index) => {
+              const x = index * (barWidth + gap);
+              const normalizedHeight = hasUsage
+                ? Math.max((point.total_words / maxWords) * chartHeight, 4)
+                : 4;
+              const y = chartHeight - normalizedHeight;
+              const label = formatPeriodLabel(point, period);
+
+              return (
+                <g key={`${point.start_timestamp}-${period}`}>
+                  <rect
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={normalizedHeight}
+                    rx={6}
+                    className={
+                      point.total_words > 0
+                        ? "fill-logo-primary/85"
+                        : "fill-mid-gray/15"
+                    }
+                  />
+                  <text
+                    x={x + barWidth / 2}
+                    y={chartHeight + 22}
+                    textAnchor="middle"
+                    className="fill-mid-gray text-[10px]"
+                  >
+                    {label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 text-xs text-mid-gray">
+        <span>
+          {hasUsage
+            ? t("dashboard.usage.peak", { count: maxWords })
+            : t("dashboard.usage.empty")}
+        </span>
+        <span>{t("dashboard.usage.unit")}</span>
+      </div>
+    </div>
+  );
+};
+
 export const DashboardSettings: React.FC = () => {
   const { t } = useTranslation();
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [usagePeriod, setUsagePeriod] = useState<DashboardUsagePeriod>("daily");
+  const [usagePoints, setUsagePoints] = useState<DashboardUsagePoint[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadStats = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await commands.getDashboardStats();
-      if (result.status === "ok") {
-        setStats(result.data);
+      const [statsResult, usageResult] = await Promise.all([
+        commands.getDashboardStats(),
+        commands.getDashboardUsageSeries(usagePeriod),
+      ]);
+      if (statsResult.status === "ok") {
+        setStats(statsResult.data);
+      }
+      if (usageResult.status === "ok") {
+        setUsagePoints(usageResult.data);
       }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [usagePeriod]);
 
   useEffect(() => {
     loadStats();
@@ -152,6 +305,12 @@ export const DashboardSettings: React.FC = () => {
           <MetricCard key={card.title} {...card} />
         ))}
       </div>
+
+      <UsageChart
+        period={usagePeriod}
+        points={usagePoints}
+        onPeriodChange={setUsagePeriod}
+      />
     </div>
   );
 };
