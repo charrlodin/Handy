@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Activity,
   BarChart3,
@@ -71,18 +77,46 @@ const formatPeriodLabel = (
   }).format(startDate);
 };
 
+type UsageTooltip = {
+  point: DashboardUsagePoint;
+  label: string;
+  x: number;
+  y: number;
+};
+
 const UsageChart: React.FC<{
   period: DashboardUsagePeriod;
   points: DashboardUsagePoint[];
   onPeriodChange: (period: DashboardUsagePeriod) => void;
 }> = ({ period, points, onPeriodChange }) => {
   const { t } = useTranslation();
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [tooltip, setTooltip] = useState<UsageTooltip | null>(null);
   const maxWords = Math.max(...points.map((point) => point.total_words), 0);
   const hasUsage = maxWords > 0;
   const chartHeight = 124;
   const barWidth = points.length > 8 ? 22 : 34;
   const gap = points.length > 8 ? 10 : 18;
   const chartWidth = points.length * barWidth + (points.length - 1) * gap;
+  const displayWidth = Math.max(chartWidth, 560);
+
+  const showTooltip = (
+    event: React.MouseEvent<SVGGElement>,
+    point: DashboardUsagePoint,
+    label: string,
+  ) => {
+    const bounds = chartRef.current?.getBoundingClientRect();
+    if (!bounds) {
+      return;
+    }
+
+    setTooltip({
+      point,
+      label,
+      x: Math.min(Math.max(event.clientX - bounds.left, 96), displayWidth - 96),
+      y: Math.max(event.clientY - bounds.top - 12, 36),
+    });
+  };
 
   return (
     <div className="bg-background border border-mid-gray/20 rounded-lg p-4 space-y-4">
@@ -124,13 +158,15 @@ const UsageChart: React.FC<{
 
       <div className="overflow-x-auto pb-1">
         <div
+          ref={chartRef}
           className="relative min-w-full"
-          style={{ width: Math.max(chartWidth, 560) }}
+          style={{ width: displayWidth }}
+          onMouseLeave={() => setTooltip(null)}
         >
           <div className="absolute inset-x-0 top-[32px] border-t border-mid-gray/10" />
           <div className="absolute inset-x-0 top-[72px] border-t border-mid-gray/10" />
           <svg
-            width={Math.max(chartWidth, 560)}
+            width={displayWidth}
             height={chartHeight + 34}
             role="img"
             aria-label={t("dashboard.usage.title")}
@@ -144,7 +180,18 @@ const UsageChart: React.FC<{
               const label = formatPeriodLabel(point, period);
 
               return (
-                <g key={`${point.start_timestamp}-${period}`}>
+                <g
+                  key={`${point.start_timestamp}-${period}`}
+                  onMouseEnter={(event) => showTooltip(event, point, label)}
+                  onMouseMove={(event) => showTooltip(event, point, label)}
+                >
+                  <rect
+                    x={Math.max(x - gap / 2, 0)}
+                    y={0}
+                    width={barWidth + gap}
+                    height={chartHeight}
+                    className="fill-transparent"
+                  />
                   <rect
                     x={x}
                     y={y}
@@ -169,6 +216,28 @@ const UsageChart: React.FC<{
               );
             })}
           </svg>
+          {tooltip && (
+            <div
+              className="pointer-events-none absolute z-10 min-w-36 rounded-lg border border-logo-primary/40 bg-background px-3 py-2 text-xs shadow-lg"
+              style={{
+                left: tooltip.x,
+                top: tooltip.y,
+                transform: "translate(-50%, -100%)",
+              }}
+            >
+              <p className="font-semibold text-text">{tooltip.label}</p>
+              <p className="mt-1 text-logo-primary">
+                {t("dashboard.usage.tooltip.words", {
+                  count: tooltip.point.total_words,
+                })}
+              </p>
+              <p className="text-mid-gray">
+                {t("dashboard.usage.tooltip.dictations", {
+                  count: tooltip.point.dictation_count,
+                })}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

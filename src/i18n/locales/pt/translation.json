@@ -699,7 +699,13 @@
       },
       "peak": "{{count}} words in the busiest period.",
       "empty": "Usage will appear after your next dictation.",
-      "unit": "Words dictated"
+      "unit": "Words dictated",
+      "tooltip": {
+        "words_one": "{{count}} word",
+        "words_other": "{{count}} words",
+        "dictations_one": "{{count}} dictation",
+        "dictations_other": "{{count}} dictations"
+      }
     }
   }
 }
