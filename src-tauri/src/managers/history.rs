@@ -145,7 +145,7 @@ struct DashboardTotals {
 
 const BASELINE_TYPING_WORDS_PER_MINUTE: f64 = 40.0;
 const SECONDS_PER_DAY: i64 = 86_400;
-const DAILY_USAGE_POINT_COUNT: i64 = 14;
+const DAYS_PER_WEEK: i64 = 7;
 const WEEKLY_USAGE_POINT_COUNT: i64 = 8;
 
 fn count_transcript_words(text: &str) -> u64 {
@@ -914,11 +914,11 @@ impl HistoryManager {
     ) -> Result<Vec<DashboardUsagePoint>> {
         match period {
             DashboardUsagePeriod::Daily => {
-                let today = timestamp_day(now_timestamp);
-                let start_day = today - (DAILY_USAGE_POINT_COUNT - 1);
-                let usage_by_day = Self::get_dashboard_usage_days(conn, start_day, today + 1)?;
+                let start_day = week_start_day(timestamp_day(now_timestamp));
+                let usage_by_day =
+                    Self::get_dashboard_usage_days(conn, start_day, start_day + DAYS_PER_WEEK)?;
 
-                Ok((0..DAILY_USAGE_POINT_COUNT)
+                Ok((0..DAYS_PER_WEEK)
                     .map(|offset| {
                         let day = start_day + offset;
                         let usage = usage_by_day.get(&day).copied().unwrap_or_default();
@@ -934,14 +934,17 @@ impl HistoryManager {
             DashboardUsagePeriod::Weekly => {
                 let current_week_start = week_start_day(timestamp_day(now_timestamp));
                 let start_week = current_week_start - ((WEEKLY_USAGE_POINT_COUNT - 1) * 7);
-                let usage_by_day =
-                    Self::get_dashboard_usage_days(conn, start_week, current_week_start + 7)?;
+                let usage_by_day = Self::get_dashboard_usage_days(
+                    conn,
+                    start_week,
+                    current_week_start + DAYS_PER_WEEK,
+                )?;
 
                 Ok((0..WEEKLY_USAGE_POINT_COUNT)
                     .map(|offset| {
-                        let week_start = start_week + (offset * 7);
+                        let week_start = start_week + (offset * DAYS_PER_WEEK);
                         let (total_words, dictation_count) =
-                            (0..7).fold((0, 0), |(words, dictations), day_offset| {
+                            (0..DAYS_PER_WEEK).fold((0, 0), |(words, dictations), day_offset| {
                                 let usage = usage_by_day
                                     .get(&(week_start + day_offset))
                                     .copied()
@@ -950,7 +953,7 @@ impl HistoryManager {
                             });
                         DashboardUsagePoint {
                             start_timestamp: day_start_timestamp(week_start),
-                            end_timestamp: day_start_timestamp(week_start + 7),
+                            end_timestamp: day_start_timestamp(week_start + DAYS_PER_WEEK),
                             total_words,
                             dictation_count,
                         }
@@ -1275,11 +1278,54 @@ mod tests {
         )
         .expect("read daily series");
 
-        assert_eq!(series.len(), 14);
-        assert_eq!(series[11].total_words, 3);
-        assert_eq!(series[11].dictation_count, 1);
-        assert_eq!(series[12].total_words, 0);
-        assert_eq!(series[13].total_words, 2);
+        assert_eq!(series.len(), 7);
+        assert_eq!(series[0].total_words, 3);
+        assert_eq!(series[0].dictation_count, 1);
+        assert_eq!(series[1].total_words, 0);
+        assert_eq!(series[2].total_words, 2);
+    }
+
+    #[test]
+    fn dashboard_daily_usage_series_shows_current_monday_to_sunday_week() {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        let migrations = Migrations::new(MIGRATIONS.to_vec());
+        migrations.to_latest(&mut conn).expect("run migrations");
+
+        let monday = SECONDS_PER_DAY * 18;
+        let now = monday + (SECONDS_PER_DAY * 2);
+        HistoryManager::record_dashboard_dictation_with_conn(
+            &conn,
+            monday - SECONDS_PER_DAY,
+            "previous sunday words",
+            3.0,
+        )
+        .expect("record previous week usage");
+        HistoryManager::record_dashboard_dictation_with_conn(&conn, monday, "monday words", 2.0)
+            .expect("record monday usage");
+        HistoryManager::record_dashboard_dictation_with_conn(
+            &conn,
+            monday + SECONDS_PER_DAY,
+            "tuesday has three",
+            3.0,
+        )
+        .expect("record tuesday usage");
+
+        let series = HistoryManager::get_dashboard_usage_series_with_conn(
+            &conn,
+            DashboardUsagePeriod::Daily,
+            now,
+        )
+        .expect("read daily series");
+
+        assert_eq!(series.len(), 7);
+        assert_eq!(series[0].start_timestamp, monday);
+        assert_eq!(series[6].end_timestamp, monday + (SECONDS_PER_DAY * 7));
+        assert_eq!(series[0].total_words, 2);
+        assert_eq!(series[1].total_words, 3);
+        assert_eq!(series[2].total_words, 0);
+        assert!(series.iter().all(|point| {
+            point.total_words != 3 || point.start_timestamp != monday - SECONDS_PER_DAY
+        }));
     }
 
     #[test]
