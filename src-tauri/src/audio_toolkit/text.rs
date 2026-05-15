@@ -251,6 +251,165 @@ fn phrase_token(word: &str) -> String {
         .to_lowercase()
 }
 
+fn previous_phrase_token(words: &[&str], index: usize) -> Option<String> {
+    index
+        .checked_sub(1)
+        .and_then(|previous_index| words.get(previous_index))
+        .map(|word| phrase_token(word))
+        .filter(|word| !word.is_empty())
+}
+
+fn next_phrase_token(words: &[&str], index: usize) -> Option<String> {
+    words
+        .get(index + 1)
+        .map(|word| phrase_token(word))
+        .filter(|word| !word.is_empty())
+}
+
+fn is_protected_meaningful_like_context(previous: Option<&str>, next: Option<&str>) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+
+    matches!(
+        previous,
+        "look"
+            | "looks"
+            | "looked"
+            | "looking"
+            | "sound"
+            | "sounds"
+            | "sounded"
+            | "sounding"
+            | "feel"
+            | "feels"
+            | "felt"
+            | "feeling"
+            | "seem"
+            | "seems"
+            | "seemed"
+            | "seeming"
+            | "taste"
+            | "tastes"
+            | "tasted"
+            | "smell"
+            | "smells"
+            | "smelled"
+            | "would"
+            | "could"
+            | "should"
+            | "i'd"
+            | "we'd"
+            | "you'd"
+            | "they'd"
+            | "he'd"
+            | "she'd"
+    ) || (matches!(previous, "i" | "we" | "you" | "they" | "he" | "she")
+        && matches!(
+            next,
+            Some(
+                "this"
+                    | "that"
+                    | "these"
+                    | "those"
+                    | "it"
+                    | "them"
+                    | "him"
+                    | "her"
+                    | "me"
+                    | "us"
+                    | "a"
+                    | "an"
+                    | "the"
+            )
+        ))
+}
+
+fn is_likely_conversational_like(previous: Option<&str>, next: Option<&str>) -> bool {
+    if is_protected_meaningful_like_context(previous, next) {
+        return false;
+    }
+
+    previous.is_none()
+        || matches!(previous, Some("so" | "and" | "but" | "then"))
+        || matches!(
+            next,
+            Some(
+                "i" | "you"
+                    | "we"
+                    | "they"
+                    | "he"
+                    | "she"
+                    | "it"
+                    | "is"
+                    | "are"
+                    | "am"
+                    | "was"
+                    | "were"
+                    | "be"
+                    | "being"
+                    | "been"
+                    | "can"
+                    | "could"
+                    | "would"
+                    | "should"
+                    | "do"
+                    | "does"
+                    | "did"
+                    | "have"
+                    | "has"
+                    | "had"
+                    | "if"
+                    | "when"
+                    | "because"
+                    | "so"
+                    | "then"
+                    | "just"
+                    | "really"
+                    | "actually"
+                    | "basically"
+                    | "literally"
+                    | "probably"
+                    | "maybe"
+                    | "more"
+                    | "better"
+                    | "to"
+            )
+        )
+}
+
+fn remove_repeated_conversational_likes(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let like_count = words
+        .iter()
+        .filter(|word| phrase_token(word) == "like")
+        .count();
+
+    if like_count < 2 {
+        return text.to_string();
+    }
+
+    words
+        .iter()
+        .enumerate()
+        .filter_map(|(index, word)| {
+            if phrase_token(word) != "like" {
+                return Some(*word);
+            }
+
+            let previous = previous_phrase_token(&words, index);
+            let next = next_phrase_token(&words, index);
+
+            if is_likely_conversational_like(previous.as_deref(), next.as_deref()) {
+                None
+            } else {
+                Some(*word)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn correction_phrase(words: &[(&str, String)]) -> String {
     words
         .iter()
@@ -548,6 +707,8 @@ pub fn filter_transcription_output_with_mode(
             .to_string();
     }
 
+    filtered = remove_repeated_conversational_likes(&filtered);
+
     // Collapse repeated 1-2 letter words (stutter artifacts like "wh wh wh wh")
     filtered = collapse_stutters(&filtered);
 
@@ -742,6 +903,21 @@ mod tests {
     }
 
     #[test]
+    fn test_light_tightening_removes_repeated_conversational_like() {
+        let text = "So like is this gonna be like really more better in the sense of like better understanding like if that makes any sense?";
+        let result = filter_transcription_output_with_mode(
+            text,
+            "en",
+            &None,
+            TranscriptTighteningMode::Light,
+        );
+        assert_eq!(
+            result,
+            "So is this gonna be really more better in the sense of better understanding if that makes any sense?"
+        );
+    }
+
+    #[test]
     fn test_off_tightening_preserves_fillers() {
         let text = "erm I was urm trying to explain this";
         let result =
@@ -771,6 +947,36 @@ mod tests {
             TranscriptTighteningMode::Strong,
         );
         assert_eq!(result, "I like this because it looks like the right answer");
+    }
+
+    #[test]
+    fn test_strong_tightening_removes_repeated_conversational_like() {
+        let text = "So like is this gonna be like really more better in the sense of like better understanding like if that makes any sense?";
+        let result = filter_transcription_output_with_mode(
+            text,
+            "en",
+            &None,
+            TranscriptTighteningMode::Strong,
+        );
+        assert_eq!(
+            result,
+            "So is this gonna be really more better in the sense of better understanding if that makes any sense?"
+        );
+    }
+
+    #[test]
+    fn test_strong_tightening_keeps_repeated_meaningful_like() {
+        let text = "I like this because it looks like the right answer and I like that too";
+        let result = filter_transcription_output_with_mode(
+            text,
+            "en",
+            &None,
+            TranscriptTighteningMode::Strong,
+        );
+        assert_eq!(
+            result,
+            "I like this because it looks like the right answer and I like that too"
+        );
     }
 
     #[test]
