@@ -23,6 +23,7 @@ export { HandyKeysShortcutInput } from "./HandyKeysShortcutInput";
 export { ShortcutInput } from "./ShortcutInput";
 export { TranslateToEnglish } from "./TranslateToEnglish";
 export { CustomWords } from "./CustomWords";
+export { TranscriptTighteningMode } from "./TranscriptTighteningMode";
 export { PostProcessingToggle } from "./PostProcessingToggle";
 export { PostProcessingSettingsApi } from "./PostProcessingSettingsApi";
 export { PostProcessingSettingsPrompts } from "./PostProcessingSettingsPrompts";

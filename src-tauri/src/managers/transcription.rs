@@ -1,5 +1,5 @@
 use crate::audio_toolkit::{
-    apply_custom_words, apply_learned_corrections, filter_transcription_output,
+    apply_custom_words, apply_learned_corrections, filter_transcription_output_with_mode,
 };
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
@@ -709,10 +709,11 @@ impl TranscriptionManager {
         };
 
         // Filter out filler words and hallucinations
-        let filtered_result = filter_transcription_output(
+        let filtered_result = filter_transcription_output_with_mode(
             &corrected_result,
             &settings.app_language,
             &settings.custom_filler_words,
+            settings.transcript_tightening_mode,
         );
 
         let et = std::time::Instant::now();

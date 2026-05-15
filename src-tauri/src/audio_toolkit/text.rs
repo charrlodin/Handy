@@ -1,4 +1,4 @@
-use crate::settings::TranscriptCorrection;
+use crate::settings::{TranscriptCorrection, TranscriptTighteningMode};
 use natural::phonetics::soundex;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -205,8 +205,8 @@ fn get_filler_words_for_language(lang: &str) -> &'static [&'static str] {
 
     match base_lang {
         "en" => &[
-            "uh", "um", "uhm", "umm", "uhh", "uhhh", "ah", "hmm", "hm", "mmm", "mm", "mh", "eh",
-            "ehh", "ha",
+            "uh", "um", "uhm", "umm", "ummm", "uhh", "uhhh", "erm", "er", "urm", "ah", "hmm", "hm",
+            "mmm", "mm", "mh", "eh", "ehh", "ha",
         ],
         "es" => &["ehm", "mmm", "hmm", "hm"],
         "pt" => &["ahm", "hmm", "mmm", "hm"],
@@ -231,6 +231,20 @@ fn get_filler_words_for_language(lang: &str) -> &'static [&'static str] {
 }
 
 static MULTI_SPACE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s{2,}").unwrap());
+static FILLER_LIKE_WITH_PUNCTUATION_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)(^|[\s,]+)like[,.](\s|$)").unwrap());
+static LEADING_FILLER_LIKE_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)(^|[.!?]\s+|(?:\b(?:so|and|but|then)\s+))like\s+((?:i|you|we|they|he|she|it)\b)",
+    )
+    .unwrap()
+});
+static STRONG_SOFTENER_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    ["you know", "sort of", "kind of"]
+        .iter()
+        .map(|phrase| Regex::new(&format!(r"(?i)\b{}\b[,.]?", regex::escape(phrase))).unwrap())
+        .collect()
+});
 
 fn phrase_token(word: &str) -> String {
     word.trim_matches(|c: char| !c.is_alphanumeric())
@@ -484,6 +498,24 @@ pub fn filter_transcription_output(
     lang: &str,
     custom_filler_words: &Option<Vec<String>>,
 ) -> String {
+    filter_transcription_output_with_mode(
+        text,
+        lang,
+        custom_filler_words,
+        TranscriptTighteningMode::Light,
+    )
+}
+
+pub fn filter_transcription_output_with_mode(
+    text: &str,
+    lang: &str,
+    custom_filler_words: &Option<Vec<String>>,
+    tightening_mode: TranscriptTighteningMode,
+) -> String {
+    if matches!(tightening_mode, TranscriptTighteningMode::Off) {
+        return text.trim().to_string();
+    }
+
     let mut filtered = text.to_string();
 
     // Build filler patterns from custom list or language defaults
@@ -501,6 +533,19 @@ pub fn filter_transcription_output(
     // Remove filler words
     for pattern in &patterns {
         filtered = pattern.replace_all(&filtered, "").to_string();
+    }
+
+    if matches!(tightening_mode, TranscriptTighteningMode::Strong) {
+        for pattern in STRONG_SOFTENER_PATTERNS.iter() {
+            filtered = pattern.replace_all(&filtered, "").to_string();
+        }
+
+        filtered = FILLER_LIKE_WITH_PUNCTUATION_PATTERN
+            .replace_all(&filtered, " ")
+            .to_string();
+        filtered = LEADING_FILLER_LIKE_PATTERN
+            .replace_all(&filtered, "$1$2")
+            .to_string();
     }
 
     // Collapse repeated 1-2 letter words (stutter artifacts like "wh wh wh wh")
@@ -682,6 +727,50 @@ mod tests {
         let text = "um I think um this is good";
         let result = filter_transcription_output(text, "en", &None);
         assert_eq!(result, "I think this is good");
+    }
+
+    #[test]
+    fn test_light_tightening_removes_erm_and_urm() {
+        let text = "erm I was urm trying to explain this";
+        let result = filter_transcription_output_with_mode(
+            text,
+            "en",
+            &None,
+            TranscriptTighteningMode::Light,
+        );
+        assert_eq!(result, "I was trying to explain this");
+    }
+
+    #[test]
+    fn test_off_tightening_preserves_fillers() {
+        let text = "erm I was urm trying to explain this";
+        let result =
+            filter_transcription_output_with_mode(text, "en", &None, TranscriptTighteningMode::Off);
+        assert_eq!(result, "erm I was urm trying to explain this");
+    }
+
+    #[test]
+    fn test_strong_tightening_removes_filler_like_and_softeners() {
+        let text = "So like I was kind of trying to, like, explain this you know";
+        let result = filter_transcription_output_with_mode(
+            text,
+            "en",
+            &None,
+            TranscriptTighteningMode::Strong,
+        );
+        assert_eq!(result, "So I was trying to explain this");
+    }
+
+    #[test]
+    fn test_strong_tightening_preserves_meaningful_like() {
+        let text = "I like this because it looks like the right answer";
+        let result = filter_transcription_output_with_mode(
+            text,
+            "en",
+            &None,
+            TranscriptTighteningMode::Strong,
+        );
+        assert_eq!(result, "I like this because it looks like the right answer");
     }
 
     #[test]

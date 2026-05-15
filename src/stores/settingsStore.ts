@@ -6,6 +6,7 @@ import type {
   AudioDevice,
   WhisperAcceleratorSetting,
   OrtAcceleratorSetting,
+  TranscriptTighteningMode,
 } from "@/bindings";
 import { commands } from "@/bindings";
 
@@ -129,6 +130,10 @@ const settingUpdaters: {
   custom_words: (value) => commands.updateCustomWords(value as string[]),
   word_correction_threshold: (value) =>
     commands.changeWordCorrectionThresholdSetting(value as number),
+  transcript_tightening_mode: (value) =>
+    commands.changeTranscriptTighteningModeSetting(
+      value as TranscriptTighteningMode,
+    ),
   paste_delay_ms: (value) =>
     commands.changePasteDelayMsSetting(value as number),
   paste_method: (value) => commands.changePasteMethodSetting(value as string),

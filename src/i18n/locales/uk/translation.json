@@ -398,6 +398,15 @@
         "add": "Додати",
         "remove": "Видалити {{word}}",
         "duplicate": "\"{{word}}\" вже існує"
+      },
+      "transcriptTightening": {
+        "title": "Tighten Transcript",
+        "description": "Control how aggressively Handy removes filler words, repeated speech, and verbal softeners from final transcriptions.",
+        "options": {
+          "off": "Off",
+          "light": "Light",
+          "strong": "Strong"
+        }
       }
     },
     "postProcessing": {

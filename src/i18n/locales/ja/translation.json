@@ -398,6 +398,15 @@
         "add": "追加",
         "remove": "{{word}}を削除",
         "duplicate": "「{{word}}」は既に存在します"
+      },
+      "transcriptTightening": {
+        "title": "Tighten Transcript",
+        "description": "Control how aggressively Handy removes filler words, repeated speech, and verbal softeners from final transcriptions.",
+        "options": {
+          "off": "Off",
+          "light": "Light",
+          "strong": "Strong"
+        }
       }
     },
     "postProcessing": {

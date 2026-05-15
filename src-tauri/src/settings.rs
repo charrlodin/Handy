@@ -185,6 +185,15 @@ pub enum RecordingRetentionPeriod {
     Months3,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptTighteningMode {
+    Off,
+    #[default]
+    Light,
+    Strong,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyboardImplementation {
@@ -458,6 +467,8 @@ pub struct AppSettings {
     pub external_script_path: Option<String>,
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
+    #[serde(default)]
+    pub transcript_tightening_mode: TranscriptTighteningMode,
     #[serde(default)]
     pub whisper_accelerator: WhisperAcceleratorSetting,
     #[serde(default)]
@@ -892,6 +903,7 @@ pub fn get_default_settings() -> AppSettings {
         typing_tool: default_typing_tool(),
         external_script_path: None,
         custom_filler_words: None,
+        transcript_tightening_mode: TranscriptTighteningMode::default(),
         whisper_accelerator: WhisperAcceleratorSetting::default(),
         ort_accelerator: OrtAcceleratorSetting::default(),
         whisper_gpu_device: default_whisper_gpu_device(),
